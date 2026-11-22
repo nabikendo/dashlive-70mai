@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     // Player nativo (H.264 + MediaCodec) é o principal; ExoPlayer fica como reserva.
     // Enquanto nenhum dos dois mostrou imagem, alterna entre eles a cada falha.
-    private var useNative = prefs.getBoolean("native", true)
+    private var useNative = true // o valor salvo é lido no onCreate
     private var engineProven = false
     private var nativePlayer: NativePlayer? = null
     private var nativeSurface: Surface? = null
@@ -91,6 +91,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLogger()
+        useNative = prefs.getBoolean("native", true)
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
         hideSystemBars()
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
         refreshInfo()
+        handler.post { showLastCrash() }
     }
 
     override fun onStart() {
@@ -139,6 +142,45 @@ class MainActivity : AppCompatActivity() {
         wifiCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         wifiCallback = null
         cm.bindProcessToNetwork(null)
+    }
+
+    // ---------------------------------------------------------------- registro de quedas
+
+    /** Guarda o erro de uma queda para mostrar na próxima abertura. */
+    private fun installCrashLogger() {
+        val f = File(filesDir, "crash.txt")
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching { f.writeText("DashLive ${BuildConfig.VERSION_NAME}\n" + android.util.Log.getStackTraceString(e)) }
+            prev?.uncaughtException(t, e)
+        }
+    }
+
+    private fun showLastCrash() {
+        val f = File(filesDir, "crash.txt")
+        if (!f.exists()) return
+        val text = runCatching { f.readText() }.getOrDefault("")
+        f.delete()
+        if (text.isBlank()) return
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val tv = android.widget.TextView(this).apply {
+            this.text = text.take(3000)
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 12f
+            setTextIsSelectable(true)
+            setTextColor(getColor(R.color.text))
+            setPadding(pad, pad, pad, pad)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("O app fechou na última vez")
+            .setView(android.widget.ScrollView(this).apply { addView(tv) })
+            .setNegativeButton("Fechar", null)
+            .setNeutralButton("Copiar") { _, _ ->
+                val cb = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cb.setPrimaryClip(android.content.ClipData.newPlainText("erro", text))
+                toast("Copiado")
+            }
+            .show()
     }
 
     // ---------------------------------------------------------------- vídeo
