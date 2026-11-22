@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.3.0"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 10
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.4.0"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 11
 
 android {
     namespace = "com.dashlive.app"
@@ -48,6 +48,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    // O modelo de detecção precisa ficar sem compressão dentro do APK
+    androidResources { noCompress += "tflite" }
     buildFeatures {
         viewBinding = true
         buildConfig = true
@@ -61,4 +63,6 @@ dependencies {
     implementation("androidx.media3:media3-ui:$media3")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    // Detecção de carros, pessoas etc. no próprio tablet (simulação da estrada)
+    implementation("org.tensorflow:tensorflow-lite-task-vision:0.4.4")
 }

@@ -47,6 +47,26 @@ jobs:
             exit 1
           fi
 
+      - name: Baixar modelo de detecção (EfficientDet-Lite0, Apache 2.0)
+        run: |
+          mkdir -p app/src/main/assets
+          F=app/src/main/assets/efficientdet_lite0.tflite
+          for u in \
+            "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite" \
+            "https://tfhub.dev/tensorflow/lite-model/efficientdet/lite0/detection/metadata/1?lite-format=tflite"; do
+            curl -fL --retry 3 -o "$F" "$u" && [ "$(stat -c%s "$F")" -gt 2000000 ] && break
+            rm -f "$F"
+          done
+          if [ ! -f "$F" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::Não foi possível baixar o modelo de detecção."
+              exit 1
+            fi
+            echo "::warning::Modelo de detecção não baixado; a simulação ficará indisponível neste build."
+          else
+            ls -la "$F"
+          fi
+
       - name: Build
         run: >
           gradle :app:assembleRelease --no-daemon

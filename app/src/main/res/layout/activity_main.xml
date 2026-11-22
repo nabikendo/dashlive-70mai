@@ -67,6 +67,21 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/btnRoad"
+                style="@style/DockButton"
+                android:contentDescription="Simulação da estrada">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_road" />
+
+                <TextView
+                    android:id="@+id/lblRoad"
+                    style="@style/DockLabel"
+                    android:text="Estrada" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/btnAuto"
                 style="@style/DockButton"
                 android:contentDescription="Android Auto">
@@ -157,6 +172,12 @@
                 app:resize_mode="fit"
                 app:surface_type="texture_view"
                 app:use_controller="false" />
+
+            <com.dashlive.app.RoadView
+                android:id="@+id/roadView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/overlay"

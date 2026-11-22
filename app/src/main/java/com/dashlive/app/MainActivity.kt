@@ -1,6 +1,7 @@
 package com.dashlive.app
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.net.ConnectivityManager
@@ -69,6 +70,22 @@ class MainActivity : AppCompatActivity() {
     private var rearSurface: Surface? = null
     private var rearW = 0
     private var rearH = 0
+
+    // Simulação da estrada (detecção de objetos no vídeo da frente)
+    private var roadMode = false
+    @Volatile private var roadDetector: RoadDetector? = null
+    private val detectExec by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
+    private val detecting = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var detCount = 0
+    private var detFps = 0
+    private var detSecStart = 0L
+    private val detectTick = object : Runnable {
+        override fun run() {
+            if (!roadMode) return
+            grabAndDetect()
+            handler.postDelayed(this, 80)
+        }
+    }
 
     private var pendingRelease: Updater.Release? = null
     private var downloadedApk: File? = null
@@ -147,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         b.textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnAuto.setOnClickListener { openAndroidAuto() }
+        b.btnRoad.setOnClickListener { toggleRoad() }
         b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
@@ -154,8 +172,16 @@ class MainActivity : AppCompatActivity() {
         handler.post { showLastCrash() }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        roadDetector?.close()
+        roadDetector = null
+        detectExec.shutdown()
+    }
+
     override fun onStart() {
         super.onStart()
+        if (roadMode) handler.post(detectTick)
         bindToCameraWifi()
         if (pendingRelease == null) checkForUpdate(manual = false)
     }
@@ -669,6 +695,68 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Fechar", null)
             .show()
+    }
+
+    // ---------------------------------------------------------------- simulação da estrada
+
+    private fun toggleRoad() {
+        roadMode = !roadMode
+        b.roadView.visibility = if (roadMode) View.VISIBLE else View.GONE
+        b.lblRoad.text = if (roadMode) "Vídeo" else "Estrada"
+        handler.removeCallbacks(detectTick)
+        b.roadView.clear()
+        if (roadMode) {
+            b.roadView.message = if (useNative) "Procurando veículos…" else "A simulação precisa do player nativo"
+            handler.post(detectTick)
+        }
+    }
+
+    /** Pega um quadro do vídeo e manda o detector olhar, sem travar a tela. */
+    private fun grabAndDetect() {
+        if (!useNative || !detecting.compareAndSet(false, true)) return
+        val tv = b.textureView
+        if (!tv.isAvailable || tv.width == 0 || tv.height == 0 || videoW <= 0 || videoH <= 0) {
+            detecting.set(false); return
+        }
+        val s = 480f / tv.width
+        val bw = (tv.width * s).toInt().coerceAtLeast(2)
+        val bh = (tv.height * s).toInt().coerceAtLeast(2)
+        val bmp: Bitmap? = try {
+            val full = tv.getBitmap(bw, bh)
+            // recorta só a área do vídeo (tira as barras pretas do encaixe)
+            val sc = minOf(bw.toFloat() / videoW, bh.toFloat() / videoH)
+            val vw = (videoW * sc).toInt().coerceIn(2, bw)
+            val vh = (videoH * sc).toInt().coerceIn(2, bh)
+            Bitmap.createBitmap(full, (bw - vw) / 2, (bh - vh) / 2, vw, vh)
+        } catch (e: Exception) {
+            null
+        }
+        if (bmp == null) { detecting.set(false); return }
+        detectExec.execute {
+            try {
+                val det = roadDetector ?: RoadDetector(this).also { roadDetector = it }
+                if (!det.available) {
+                    runOnUiThread {
+                        b.roadView.message = "Modelo de detecção não encontrado neste APK" +
+                            (det.error?.let { "\n$it" } ?: "")
+                    }
+                    return@execute
+                }
+                val seen = det.detect(bmp)
+                val now = SystemClock.uptimeMillis()
+                if (now - detSecStart > 1000) { detFps = detCount; detCount = 0; detSecStart = now }
+                detCount++
+                runOnUiThread {
+                    b.roadView.message = null
+                    b.roadView.fps = detFps
+                    b.roadView.update(seen)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { b.roadView.message = "Falha na detecção: ${e.message}" }
+            } finally {
+                detecting.set(false)
+            }
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
