@@ -9,7 +9,7 @@ App Android para ver ao vivo, no tablet, a câmera 70mai A200 (DR2210).
 - Comandos HTTP no estilo `http://192.168.0.1/.../getdeviceattr.cgi` (não usados ainda)
 
 ## Como usar
-1. Ligue a câmera e conecte o tablet ao Wi-Fi `70mai_A200_…`.
+1. Ligue a câmera e conecte o tablet ao Wi-Fi `70mai Dash Cam A200-XXXX`.
 2. Feche o app oficial da 70mai (a câmera pode aceitar só um cliente).
 3. Abra o DashLive. Toque no vídeo para mostrar ou esconder os botões.
 4. Se não abrir: **Ajustes → Forçar RTSP por TCP**, ou teste o canal 13.

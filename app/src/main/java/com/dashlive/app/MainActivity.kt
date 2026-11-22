@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -53,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     private var downloading = false
 
     private var ip: String
-        get() = prefs.getString("ip", "192.168.0.1")!!
+        get() = prefs.getString("ip", "")!!
         set(v) = prefs.edit().putString("ip", v).apply()
     private var channel: Int
         get() = prefs.getInt("channel", 12)
@@ -65,8 +66,13 @@ class MainActivity : AppCompatActivity() {
         get() = prefs.getString("custom", "")!!
         set(v) = prefs.edit().putString("custom", v).apply()
 
+    /** IP digitado nos Ajustes; vazio = usa o gateway do Wi-Fi da câmera (automático). */
+    private var detectedIp: String? = null
+    private val camIp: String
+        get() = ip.ifBlank { detectedIp ?: "192.168.0.1" }
+
     private val streamUrl: String
-        get() = customUrl.ifBlank { "rtsp://$ip:554/livestream/$channel" }
+        get() = customUrl.ifBlank { "rtsp://$camIp:554/livestream/$channel" }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -112,7 +118,7 @@ class MainActivity : AppCompatActivity() {
      * tráfego por outra rede e o vídeo nunca abre.
      */
     private fun bindToCameraWifi() {
-        setState(State.CONNECTING, "Procurando a câmera", "Conecte o tablet ao Wi-Fi 70mai_A200_…")
+        setState(State.CONNECTING, "Procurando a câmera", "Conecte o tablet ao Wi-Fi 70mai Dash Cam A200-…")
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -121,7 +127,8 @@ class MainActivity : AppCompatActivity() {
             override fun onAvailable(network: Network) {
                 wifiNetwork = network
                 cm.bindProcessToNetwork(network)
-                handler.post { startPlayback() }
+                detectedIp = gatewayOf(network)
+                handler.post { refreshInfo(); startPlayback() }
             }
 
             override fun onLost(network: Network) {
@@ -132,7 +139,7 @@ class MainActivity : AppCompatActivity() {
                         releasePlayer()
                         setState(
                             State.ERROR, "Câmera desconectada",
-                            "Conecte o tablet ao Wi-Fi 70mai_A200_…"
+                            "Conecte o tablet ao Wi-Fi 70mai Dash Cam A200-…"
                         )
                     }
                 }
@@ -142,6 +149,17 @@ class MainActivity : AppCompatActivity() {
         cm.requestNetwork(request, cb)
         // Alguns aparelhos não chamam onAvailable: tenta mesmo assim depois de 4 s
         handler.postDelayed({ if (player == null) startPlayback() }, 4000)
+    }
+
+    /** A câmera é o roteador da própria rede Wi-Fi: seu IP é o gateway. */
+    private fun gatewayOf(n: Network): String? {
+        val lp = cm.getLinkProperties(n) ?: return null
+        lp.routes.firstOrNull { it.isDefaultRoute && it.gateway is java.net.Inet4Address }
+            ?.gateway?.hostAddress?.let { if (it != "0.0.0.0") return it }
+        if (Build.VERSION.SDK_INT >= 30) {
+            lp.dhcpServerAddress?.hostAddress?.let { return it }
+        }
+        return null
     }
 
     private fun startPlayback() {
@@ -166,7 +184,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
-                    Player.STATE_READY -> setState(State.LIVE, "Ao vivo", "Canal $channel • $ip")
+                    Player.STATE_READY -> setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp")
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
@@ -211,7 +229,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshInfo() {
         b.lblChannel.text = "Canal $channel"
-        b.valIp.text = if (customUrl.isBlank()) ip else "personalizado"
+        b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
         b.valChannel.text = channel.toString()
         b.valProto.text = if (forceTcp) "RTSP / TCP" else "RTSP / UDP"
     }
@@ -234,7 +252,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, 0)
         }
-        val ipField = EditText(this).apply { hint = "IP da câmera"; setText(ip) }
+        val ipField = EditText(this).apply { hint = "IP da câmera (vazio = automático)"; setText(ip) }
         val urlField = EditText(this).apply {
             hint = "URL RTSP personalizada (opcional)"
             setText(customUrl)
@@ -249,13 +267,13 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Ajustes")
             .setView(box)
             .setPositiveButton("Salvar") { _, _ ->
-                ip = ipField.text.toString().trim().ifBlank { "192.168.0.1" }
+                ip = ipField.text.toString().trim()
                 customUrl = urlField.text.toString().trim()
                 forceTcp = tcpBox.isChecked
                 refreshInfo(); startPlayback()
             }
             .setNeutralButton("Padrão") { _, _ ->
-                ip = "192.168.0.1"; customUrl = ""; forceTcp = false; channel = 12
+                ip = ""; customUrl = ""; forceTcp = false; channel = 12
                 refreshInfo(); startPlayback()
             }
             .setNegativeButton("Cancelar", null)
