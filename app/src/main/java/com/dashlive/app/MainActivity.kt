@@ -146,6 +146,7 @@ class MainActivity : AppCompatActivity() {
         }
         b.textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
         b.btnSettings.setOnClickListener { showSettings() }
+        b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
@@ -638,11 +639,44 @@ class MainActivity : AppCompatActivity() {
         builder.show()
     }
 
+    /**
+     * Android Auto no tablet é feito pelo app Open Headunit (projeto separado, licença AGPL).
+     * O DashLive só o abre; sem ele instalado, mostra o caminho para baixar.
+     */
+    private fun openAndroidAuto() {
+        val intent = packageManager.getLaunchIntentForPackage(HEADUNIT_PKG)
+        if (intent != null) {
+            startActivity(intent)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Android Auto no tablet")
+            .setMessage(
+                "O Android Auto roda pelo app Open Headunit, que ainda não está instalado.\n\n" +
+                    "1. Baixe o .apk em github.com/andreknieriem/open-headunit (aba Releases) e instale.\n" +
+                    "2. Instale o app Android Auto no celular e ligue o celular ao tablet por cabo USB.\n" +
+                    "3. Volte aqui e toque em Android Auto: o DashLive abre o Open Headunit."
+            )
+            .setPositiveButton("Abrir página de download") { _, _ ->
+                runCatching {
+                    startActivity(
+                        android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://github.com/andreknieriem/open-headunit/releases/latest")
+                        )
+                    )
+                }
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     companion object {
         private val RETRY = Any()
         private val REAR = Any()
+        private const val HEADUNIT_PKG = "com.andrerinas.headunitrevived"
 
         /** Todos os caminhos de vídeo que o app oficial da 70mai conhece. */
         private val SOURCES = listOf(

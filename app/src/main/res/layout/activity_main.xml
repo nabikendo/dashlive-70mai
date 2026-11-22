@@ -67,6 +67,20 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/btnAuto"
+                style="@style/DockButton"
+                android:contentDescription="Android Auto">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_car" />
+
+                <TextView
+                    style="@style/DockLabel"
+                    android:text="Android Auto" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/btnDiag"
                 style="@style/DockButton"
                 android:contentDescription="Diagnóstico">
