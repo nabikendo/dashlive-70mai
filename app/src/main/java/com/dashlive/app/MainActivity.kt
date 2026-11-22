@@ -8,10 +8,12 @@ import android.net.NetworkRequest
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -25,14 +27,17 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.dashlive.app.databinding.ActivityMainBinding
+import java.io.File
 
 /**
- * Mostra ao vivo o vídeo da 70mai A200 (DR2210, chip HiSilicon).
- * Endereço encontrado no app oficial: rtsp://192.168.0.1:554/livestream/12
- * (12 = canal principal; 13 = segundo canal, se existir).
+ * Vídeo ao vivo da 70mai A200 (DR2210, chip HiSilicon).
+ * Endereço achado no app oficial: rtsp://192.168.0.1:554/livestream/12
+ * (12 = canal principal; 13 = segundo canal).
  */
 @UnstableApi
 class MainActivity : AppCompatActivity() {
+
+    private enum class State { CONNECTING, LIVE, ERROR }
 
     private lateinit var b: ActivityMainBinding
     private var player: ExoPlayer? = null
@@ -41,6 +46,11 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var wifiNetwork: Network? = null
+    private var fullscreen = false
+
+    private var pendingRelease: Updater.Release? = null
+    private var downloadedApk: File? = null
+    private var downloading = false
 
     private var ip: String
         get() = prefs.getString("ip", "192.168.0.1")!!
@@ -64,25 +74,26 @@ class MainActivity : AppCompatActivity() {
         setContentView(b.root)
         hideSystemBars()
 
+        b.valVersion.text = BuildConfig.VERSION_NAME
         b.btnChannel.setOnClickListener {
             channel = if (channel == 12) 13 else 12
-            updateChannelLabel()
+            refreshInfo()
             startPlayback()
         }
         b.btnReload.setOnClickListener { startPlayback() }
+        b.btnFullscreen.setOnClickListener { setFullscreen(true) }
+        b.btnExitFs.setOnClickListener { setFullscreen(false) }
+        b.playerView.setOnClickListener { if (fullscreen) setFullscreen(false) }
         b.btnSettings.setOnClickListener { showSettings() }
-        // Toque no vídeo mostra/esconde os botões
-        b.playerView.setOnClickListener {
-            val v = if (b.bar.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            b.bar.visibility = v
-            b.status.visibility = v
-        }
-        updateChannelLabel()
+        b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
+        b.btnUpdateNow.setOnClickListener { onUpdateButton() }
+        refreshInfo()
     }
 
     override fun onStart() {
         super.onStart()
         bindToCameraWifi()
+        if (pendingRelease == null) checkForUpdate(manual = false)
     }
 
     override fun onStop() {
@@ -94,12 +105,14 @@ class MainActivity : AppCompatActivity() {
         cm.bindProcessToNetwork(null)
     }
 
+    // ---------------------------------------------------------------- vídeo
+
     /**
      * O Wi-Fi da câmera não tem internet; sem isto o Android pode mandar o
-     * tráfego pelos dados móveis ou por outra rede e o vídeo nunca abre.
+     * tráfego por outra rede e o vídeo nunca abre.
      */
     private fun bindToCameraWifi() {
-        setStatus("Procurando o Wi-Fi da câmera…")
+        setState(State.CONNECTING, "Procurando a câmera", "Conecte o tablet ao Wi-Fi 70mai_A200_…")
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -117,21 +130,24 @@ class MainActivity : AppCompatActivity() {
                     cm.bindProcessToNetwork(null)
                     handler.post {
                         releasePlayer()
-                        setStatus("Wi-Fi da câmera desconectado.\nConecte o tablet à rede 70mai_A200_…")
+                        setState(
+                            State.ERROR, "Câmera desconectada",
+                            "Conecte o tablet ao Wi-Fi 70mai_A200_…"
+                        )
                     }
                 }
             }
         }
         wifiCallback = cb
         cm.requestNetwork(request, cb)
-        // Se em 4 s nada aconteceu, tenta assim mesmo (alguns aparelhos não chamam onAvailable)
+        // Alguns aparelhos não chamam onAvailable: tenta mesmo assim depois de 4 s
         handler.postDelayed({ if (player == null) startPlayback() }, 4000)
     }
 
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
-        setStatus("Conectando…\n$streamUrl" + if (forceTcp) "  (TCP)" else "")
+        setState(State.CONNECTING, "Conectando", streamUrl)
 
         // Buffers curtos = menos atraso no ao vivo
         val loadControl = DefaultLoadControl.Builder()
@@ -149,14 +165,14 @@ class MainActivity : AppCompatActivity() {
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
-                    Player.STATE_BUFFERING -> setStatus("Carregando…")
-                    Player.STATE_READY -> setStatus("Ao vivo • canal $channel")
+                    Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
+                    Player.STATE_READY -> setState(State.LIVE, "Ao vivo", "Canal $channel • $ip")
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                scheduleRetry("Erro: ${error.errorCodeName}")
+                scheduleRetry("Sem sinal da câmera (${error.errorCodeName})")
             }
         })
         p.prepare()
@@ -165,8 +181,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scheduleRetry(msg: String) {
-        setStatus("$msg\nTentando de novo em 3 s…")
-        handler.postAtTime({ startPlayback() }, RETRY, android.os.SystemClock.uptimeMillis() + 3000)
+        setState(State.ERROR, msg, "Tentando de novo em 3 s…")
+        handler.postAtTime({ startPlayback() }, RETRY, SystemClock.uptimeMillis() + 3000)
     }
 
     private fun releasePlayer() {
@@ -175,8 +191,45 @@ class MainActivity : AppCompatActivity() {
         player = null
     }
 
+    // ---------------------------------------------------------------- interface
+
+    private fun setState(state: State, title: String, subtitle: String) {
+        b.title.text = title
+        b.subtitle.text = subtitle
+        b.dot.setBackgroundResource(
+            when (state) {
+                State.LIVE -> R.drawable.bg_ok_dot
+                State.CONNECTING -> R.drawable.bg_warn_dot
+                State.ERROR -> R.drawable.bg_live_dot
+            }
+        )
+        val live = state == State.LIVE
+        b.livePill.visibility = if (live) View.VISIBLE else View.GONE
+        b.overlay.visibility = if (live) View.GONE else View.VISIBLE
+        b.overlay.text = "$title\n$subtitle"
+    }
+
+    private fun refreshInfo() {
+        b.lblChannel.text = "Canal $channel"
+        b.valIp.text = if (customUrl.isBlank()) ip else "personalizado"
+        b.valChannel.text = channel.toString()
+        b.valProto.text = if (forceTcp) "RTSP / TCP" else "RTSP / UDP"
+    }
+
+    private fun setFullscreen(on: Boolean) {
+        fullscreen = on
+        val v = if (on) View.GONE else View.VISIBLE
+        b.sidePanel.visibility = v
+        b.dock.visibility = v
+        b.btnExitFs.visibility = if (on) View.VISIBLE else View.GONE
+        val pad = if (on) 0 else (16 * resources.displayMetrics.density).toInt()
+        b.main.setPadding(pad, pad, pad, pad)
+        b.videoCard.setBackgroundColor(getColor(R.color.video_bg))
+        if (!on) b.videoCard.setBackgroundResource(R.drawable.bg_video)
+    }
+
     private fun showSettings() {
-        val pad = (16 * resources.displayMetrics.density).toInt()
+        val pad = (20 * resources.displayMetrics.density).toInt()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, 0)
@@ -199,22 +252,14 @@ class MainActivity : AppCompatActivity() {
                 ip = ipField.text.toString().trim().ifBlank { "192.168.0.1" }
                 customUrl = urlField.text.toString().trim()
                 forceTcp = tcpBox.isChecked
-                startPlayback()
+                refreshInfo(); startPlayback()
             }
             .setNeutralButton("Padrão") { _, _ ->
                 ip = "192.168.0.1"; customUrl = ""; forceTcp = false; channel = 12
-                updateChannelLabel(); startPlayback()
+                refreshInfo(); startPlayback()
             }
             .setNegativeButton("Cancelar", null)
             .show()
-    }
-
-    private fun updateChannelLabel() {
-        b.btnChannel.text = "Canal $channel"
-    }
-
-    private fun setStatus(text: String) {
-        b.status.text = text
     }
 
     private fun hideSystemBars() {
@@ -224,6 +269,85 @@ class MainActivity : AppCompatActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
+
+    // ---------------------------------------------------------------- atualização
+
+    /** [manual] = o usuário tocou em "Atualizar"; mostra também as mensagens de erro e "tudo em dia". */
+    private fun checkForUpdate(manual: Boolean) {
+        if (downloading) return
+        if (manual) toast("Verificando atualização…")
+        Thread {
+            val result = Updater.check(cm, BuildConfig.VERSION_NAME)
+            runOnUiThread {
+                when (result) {
+                    is Updater.Check.Available -> showUpdate(result.release)
+                    Updater.Check.UpToDate ->
+                        if (manual) toast("Você já está na versão mais recente (${BuildConfig.VERSION_NAME})")
+                    Updater.Check.NoInternet ->
+                        if (manual) toast(
+                            "Sem internet. Saia do Wi-Fi da câmera e conecte a um Wi-Fi com internet para atualizar."
+                        )
+                    is Updater.Check.Failed ->
+                        if (manual) toast("Não foi possível verificar: ${result.reason}")
+                }
+            }
+        }.start()
+    }
+
+    private fun showUpdate(release: Updater.Release) {
+        pendingRelease = release
+        downloadedApk = null
+        val mb = if (release.sizeBytes > 0) " • %.1f MB".format(release.sizeBytes / 1048576.0) else ""
+        b.updateCard.visibility = View.VISIBLE
+        b.updateTitle.text = "Nova versão ${release.tag}$mb"
+        b.updateNotes.text = release.notes.ifBlank { "Melhorias e correções." }
+        b.updateProgress.visibility = View.GONE
+        b.btnUpdateNowText.text = "Baixar e instalar"
+        b.lblUpdate.text = "Atualizar •"
+    }
+
+    private fun onUpdateButton() {
+        val release = pendingRelease ?: return
+        // Já baixado (ex.: o usuário voltou da tela de permissão): só instala
+        downloadedApk?.let { if (it.exists()) { Updater.install(this, it); return } }
+        if (downloading) return
+
+        downloading = true
+        b.updateProgress.visibility = View.VISIBLE
+        b.updateProgress.isIndeterminate = true
+        b.btnUpdateNowText.text = "Baixando…"
+        Thread {
+            try {
+                val apk = Updater.download(this, cm, release) { pct ->
+                    runOnUiThread {
+                        if (pct >= 0) {
+                            b.updateProgress.isIndeterminate = false
+                            b.updateProgress.progress = pct
+                            b.btnUpdateNowText.text = "Baixando… $pct%"
+                        }
+                    }
+                }
+                runOnUiThread {
+                    downloading = false
+                    downloadedApk = apk
+                    b.btnUpdateNowText.text = "Instalar agora"
+                    b.updateProgress.visibility = View.GONE
+                    if (!Updater.install(this, apk)) {
+                        toast("Permita instalar apps do DashLive e volte para concluir.")
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    downloading = false
+                    b.updateProgress.visibility = View.GONE
+                    b.btnUpdateNowText.text = "Tentar de novo"
+                    toast("Falha no download: ${e.message}")
+                }
+            }
+        }.start()
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     companion object {
         private val RETRY = Any()

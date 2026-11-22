@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.1.0"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 2
+
 android {
     namespace = "com.dashlive.app"
     compileSdk = 34
@@ -11,15 +15,32 @@ android {
         applicationId = "com.dashlive.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+        buildConfigField("String", "UPDATE_REPO", "\"nabikendo/dashlive-70mai\"")
+    }
+
+    // A chave de assinatura NÃO fica no repositório: a Action a recebe pelo segredo
+    // ANDROID_KEYSTORE_B64 e aponta para ela por variáveis de ambiente.
+    val ksPath = System.getenv("KEYSTORE_FILE")
+    val hasKey = ksPath != null && file(ksPath).exists()
+
+    signingConfigs {
+        if (hasKey) {
+            create("release") {
+                storeFile = file(ksPath!!)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = "dashlive"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Assina com a chave de debug para poder instalar direto no tablet
-            signingConfig = signingConfigs.getByName("debug")
+            // Sem a chave (build local), cai na chave de debug só para compilar
+            signingConfig = signingConfigs.getByName(if (hasKey) "release" else "debug")
         }
     }
     compileOptions {
@@ -27,7 +48,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { viewBinding = true }
+    buildFeatures {
+        viewBinding = true
+        buildConfig = true
+    }
 }
 
 dependencies {

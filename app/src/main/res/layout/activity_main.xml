@@ -1,55 +1,362 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black"
+    android:background="@color/bg"
     android:keepScreenOn="true">
 
-    <androidx.media3.ui.PlayerView
-        android:id="@+id/playerView"
+    <LinearLayout
+        android:id="@+id/main"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        app:use_controller="false"
-        app:resize_mode="fit" />
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <TextView
-        android:id="@+id/status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|start"
-        android:layout_margin="16dp"
-        android:background="#99000000"
-        android:padding="10dp"
-        android:textColor="#FFFFFF"
-        android:textSize="15sp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
 
-    <LinearLayout
-        android:id="@+id/bar"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="16dp"
-        android:orientation="horizontal">
+            <!-- Cartão do vídeo -->
+            <FrameLayout
+                android:id="@+id/videoCard"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/bg_video"
+                android:clipToOutline="true">
 
-        <Button
-            android:id="@+id/btnChannel"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Canal 12" />
+                <androidx.media3.ui.PlayerView
+                    android:id="@+id/playerView"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    app:resize_mode="fit"
+                    app:surface_type="texture_view"
+                    app:use_controller="false" />
 
-        <Button
-            android:id="@+id/btnReload"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="Reconectar" />
+                <TextView
+                    android:id="@+id/overlay"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:gravity="center"
+                    android:maxWidth="420dp"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="18sp" />
 
-        <Button
-            android:id="@+id/btnSettings"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="Ajustes" />
+                <LinearLayout
+                    android:id="@+id/livePill"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_gravity="top|start"
+                    android:layout_margin="16dp"
+                    android:background="@drawable/bg_pill"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="16dp"
+                    android:visibility="gone">
+
+                    <View
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
+                        android:background="@drawable/bg_live_dot" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="AO VIVO"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <ImageButton
+                    android:id="@+id/btnExitFs"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:layout_gravity="top|end"
+                    android:layout_margin="16dp"
+                    android:background="@drawable/bg_pill"
+                    android:contentDescription="Sair da tela cheia"
+                    android:src="@drawable/ic_close"
+                    android:tint="#FFFFFFFF"
+                    android:visibility="gone" />
+            </FrameLayout>
+
+            <!-- Painel lateral -->
+            <LinearLayout
+                android:id="@+id/sidePanel"
+                android:layout_width="320dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="16dp"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <View
+                            android:id="@+id/dot"
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:background="@drawable/bg_warn_dot" />
+
+                        <TextView
+                            android:id="@+id/title"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="10dp"
+                            android:fontFamily="sans-serif-medium"
+                            android:text="Conectando"
+                            android:textColor="@color/text"
+                            android:textSize="22sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/subtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:textColor="@color/text_muted"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <TextView style="@style/InfoLabel" android:text="Câmera" />
+
+                        <TextView style="@style/InfoValue" android:text="70mai A200" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <TextView style="@style/InfoLabel" android:text="Endereço" />
+
+                        <TextView
+                            android:id="@+id/valIp"
+                            style="@style/InfoValue" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <TextView style="@style/InfoLabel" android:text="Canal" />
+
+                        <TextView
+                            android:id="@+id/valChannel"
+                            style="@style/InfoValue" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <TextView style="@style/InfoLabel" android:text="Protocolo" />
+
+                        <TextView
+                            android:id="@+id/valProto"
+                            style="@style/InfoValue" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:orientation="horizontal">
+
+                        <TextView style="@style/InfoLabel" android:text="Versão do app" />
+
+                        <TextView
+                            android:id="@+id/valVersion"
+                            style="@style/InfoValue" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Aviso de atualização -->
+                <LinearLayout
+                    android:id="@+id/updateCard"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/bg_card"
+                    android:orientation="vertical"
+                    android:padding="20dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/updateTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/text"
+                        android:textSize="17sp" />
+
+                    <TextView
+                        android:id="@+id/updateNotes"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:maxLines="4"
+                        android:ellipsize="end"
+                        android:textColor="@color/text_muted"
+                        android:textSize="13sp" />
+
+                    <ProgressBar
+                        android:id="@+id/updateProgress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:max="100"
+                        android:visibility="gone" />
+
+                    <LinearLayout
+                        android:id="@+id/btnUpdateNow"
+                        android:layout_width="match_parent"
+                        android:layout_height="56dp"
+                        android:layout_marginTop="14dp"
+                        android:background="@drawable/bg_primary_button"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <ImageView
+                            android:layout_width="22dp"
+                            android:layout_height="22dp"
+                            android:importantForAccessibility="no"
+                            android:src="@drawable/ic_download"
+                            android:tint="@color/on_primary" />
+
+                        <TextView
+                            android:id="@+id/btnUpdateNowText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:fontFamily="sans-serif-medium"
+                            android:text="Baixar e instalar"
+                            android:textColor="@color/on_primary"
+                            android:textSize="16sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Dock inferior (estilo CarPlay / Tesla) -->
+        <LinearLayout
+            android:id="@+id/dock"
+            android:layout_width="match_parent"
+            android:layout_height="88dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_card"
+            android:orientation="horizontal"
+            android:padding="8dp">
+
+            <LinearLayout
+                android:id="@+id/btnChannel"
+                style="@style/DockButton"
+                android:contentDescription="Trocar canal">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_swap" />
+
+                <TextView
+                    android:id="@+id/lblChannel"
+                    style="@style/DockLabel"
+                    android:text="Canal 12" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnReload"
+                style="@style/DockButton"
+                android:contentDescription="Reconectar">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_refresh" />
+
+                <TextView
+                    style="@style/DockLabel"
+                    android:text="Reconectar" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnFullscreen"
+                style="@style/DockButton"
+                android:contentDescription="Tela cheia">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_fullscreen" />
+
+                <TextView
+                    style="@style/DockLabel"
+                    android:text="Tela cheia" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnUpdate"
+                style="@style/DockButton"
+                android:contentDescription="Verificar atualização">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_download" />
+
+                <TextView
+                    android:id="@+id/lblUpdate"
+                    style="@style/DockLabel"
+                    android:text="Atualizar" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnSettings"
+                style="@style/DockButton"
+                android:contentDescription="Ajustes">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_settings" />
+
+                <TextView
+                    style="@style/DockLabel"
+                    android:text="Ajustes" />
+            </LinearLayout>
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>
