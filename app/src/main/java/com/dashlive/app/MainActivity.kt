@@ -48,6 +48,8 @@ class MainActivity : AppCompatActivity() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var wifiNetwork: Network? = null
     private var fullscreen = false
+    /** Alterna UDP/TCP a cada falha, porque algumas câmeras só entregam por um deles. */
+    private var autoTcp = false
 
     private var pendingRelease: Updater.Release? = null
     private var downloadedApk: File? = null
@@ -166,7 +168,8 @@ class MainActivity : AppCompatActivity() {
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
-        setState(State.CONNECTING, "Conectando", streamUrl)
+        refreshInfo()
+        setState(State.CONNECTING, "Conectando", streamUrl + if (forceTcp || autoTcp) "  (TCP)" else "  (UDP)")
 
         // Buffers curtos = menos atraso no ao vivo
         val loadControl = DefaultLoadControl.Builder()
@@ -175,7 +178,7 @@ class MainActivity : AppCompatActivity() {
 
         val p = ExoPlayer.Builder(this).setLoadControl(loadControl).build()
         val source = RtspMediaSource.Factory()
-            .setForceUseRtpTcp(forceTcp)
+            .setForceUseRtpTcp(forceTcp || autoTcp)
             .setTimeoutMs(8000)
             .createMediaSource(MediaItem.fromUri(streamUrl))
 
@@ -191,6 +194,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                autoTcp = !autoTcp
                 val why = (error.cause?.message ?: error.message).orEmpty().take(110)
                 scheduleRetry("Sem sinal da câmera (${error.errorCodeName})\n$why")
             }
@@ -233,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         b.lblChannel.text = "Canal $channel"
         b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
         b.valChannel.text = channel.toString()
-        b.valProto.text = if (forceTcp) "RTSP / TCP" else "RTSP / UDP"
+        b.valProto.text = if (forceTcp || autoTcp) "RTSP / TCP" else "RTSP / UDP"
     }
 
     private fun setFullscreen(on: Boolean) {
