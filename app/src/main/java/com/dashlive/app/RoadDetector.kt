@@ -2,6 +2,7 @@ package com.dashlive.app
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.task.vision.detector.ObjectDetector
 
@@ -23,14 +24,21 @@ class RoadDetector(context: Context) {
         private set
 
     init {
-        try {
+        val inApk = runCatching { context.assets.list("")?.contains(MODEL) == true }.getOrDefault(false)
+        if (!inApk) {
+            error = "Modelo de detecção não incluído neste APK"
+        } else try {
             val opts = ObjectDetector.ObjectDetectorOptions.builder()
                 .setMaxResults(15)
                 .setScoreThreshold(0.35f)
                 .build()
             detector = ObjectDetector.createFromFileAndOptions(context, MODEL, opts)
         } catch (e: Throwable) {
-            error = e.message ?: e.javaClass.simpleName
+            // A Task Library embrulha o erro real ("Error getting native address..."); mostra a causa
+            var cause: Throwable = e
+            while (cause.cause != null && cause.cause !== cause) cause = cause.cause!!
+            Log.e("DashLive", "detector não iniciou", e)
+            error = "A detecção não pôde iniciar: " + (cause.message ?: cause.javaClass.simpleName)
         }
     }
 

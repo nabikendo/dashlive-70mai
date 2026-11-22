@@ -3,6 +3,7 @@ package com.dashlive.app
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.util.Base64
+import android.util.Log
 import android.view.Surface
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -98,6 +99,7 @@ class NativePlayer(
         }
         if (running) {
             running = false
+            Log.w(TAG, "$url: ${error ?: "conexão encerrada"}")
             onError(error ?: "conexão encerrada")
         }
     }
@@ -108,7 +110,7 @@ class NativePlayer(
             val nal = runCatching { Base64.decode(b64.trim(), Base64.DEFAULT) }.getOrNull() ?: return@forEach
             if (nal.isEmpty()) return@forEach
             when (nal[0].toInt() and 0x1F) {
-                7 -> sps = lowLatencySps(nal)
+                7 -> sps = H264Sps.lowLatency(nal)
                 8 -> pps = nal
             }
         }
@@ -226,7 +228,7 @@ class NativePlayer(
         if (size <= 0) return
         when (data[off].toInt() and 0x1F) {
             7 -> {
-                val fixed = lowLatencySps(data.copyOfRange(off, off + size))
+                val fixed = H264Sps.lowLatency(data.copyOfRange(off, off + size))
                 sps = fixed
                 au.write(startCode)
                 au.write(fixed)
@@ -276,7 +278,7 @@ class NativePlayer(
     private fun initCodec(): Boolean {
         val s = sps ?: return false
         val p = pps ?: return false
-        val (w, h) = parseSpsSize(s) ?: (1280 to 720)
+        val (w, h) = H264Sps.size(s) ?: (1280 to 720)
         val fmt = MediaFormat.createVideoFormat("video/avc", w, h)
         fmt.setByteBuffer("csd-0", ByteBuffer.wrap(startCode + s))
         fmt.setByteBuffer("csd-1", ByteBuffer.wrap(startCode + p))
@@ -307,7 +309,11 @@ class NativePlayer(
             when {
                 i >= 0 -> {
                     runCatching { c.releaseOutputBuffer(i, true) } // mostra na hora
-                    if (!live) { live = true; onLive() }
+                    if (!live) {
+                        live = true
+                        Log.i(TAG, "$url: ao vivo")
+                        onLive()
+                    }
                 }
                 i == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val f = c.outputFormat
@@ -326,140 +332,7 @@ class NativePlayer(
         }
     }
 
-    // ---------------------------------------------------------------- SPS
-
-    private class Bits(val d: ByteArray) {
-        var pos = 0
-        fun bit(): Int {
-            val i = pos shr 3
-            val v = if (i < d.size) (d[i].toInt() shr (7 - (pos and 7))) and 1 else 0
-            pos++
-            return v
-        }
-        fun u(n: Int): Int { var v = 0; repeat(n) { v = (v shl 1) or bit() }; return v }
-        fun ue(): Int {
-            var z = 0
-            while (bit() == 0 && z < 32) z++
-            return if (z == 0) 0 else (1 shl z) - 1 + u(z)
-        }
-        fun se(): Int { val k = ue(); return if (k % 2 == 1) (k + 1) / 2 else -(k / 2) }
-    }
-
-    private class SpsInfo(
-        val w: Int, val h: Int, val rbsp: ByteArray,
-        val vuiPos: Int, val vuiPresent: Boolean, val numRef: Int,
-    )
-
-    /** Lê largura e altura do SPS (H.264). Devolve null se não conseguir. */
-    private fun parseSpsSize(sps: ByteArray): Pair<Int, Int>? = parseSps(sps)?.let { it.w to it.h }
-
-    private fun parseSps(sps: ByteArray): SpsInfo? = try {
-        val raw = ByteArrayOutputStream()
-        var zeros = 0
-        for (i in 1 until sps.size) {
-            val x = sps[i].toInt() and 0xFF
-            if (zeros >= 2 && x == 3) { zeros = 0; continue }
-            raw.write(x)
-            zeros = if (x == 0) zeros + 1 else 0
-        }
-        val rbsp = raw.toByteArray()
-        val b = Bits(rbsp)
-        val profile = b.u(8); b.u(8); b.u(8); b.ue()
-        var chroma = 1
-        if (profile in listOf(100, 110, 122, 244, 44, 83, 86, 118, 128)) {
-            chroma = b.ue()
-            if (chroma == 3) b.u(1)
-            b.ue(); b.ue(); b.u(1)
-            if (b.u(1) == 1) {
-                val n = if (chroma != 3) 8 else 12
-                for (i in 0 until n) if (b.u(1) == 1) {
-                    val size = if (i < 6) 16 else 64
-                    var last = 8
-                    var next = 8
-                    for (j in 0 until size) {
-                        if (next != 0) next = (last + b.se() + 256) % 256
-                        if (next != 0) last = next
-                    }
-                }
-            }
-        }
-        b.ue()
-        val poc = b.ue()
-        if (poc == 0) b.ue()
-        else if (poc == 1) { b.u(1); b.se(); b.se(); repeat(b.ue()) { b.se() } }
-        val numRef = b.ue(); b.u(1)
-        val w = (b.ue() + 1) * 16
-        val hMap = b.ue() + 1
-        val frameMbsOnly = b.u(1)
-        val h = (2 - frameMbsOnly) * hMap * 16
-        if (frameMbsOnly == 0) b.u(1)
-        b.u(1)
-        var cl = 0; var cr = 0; var ct = 0; var cb = 0
-        if (b.u(1) == 1) { cl = b.ue(); cr = b.ue(); ct = b.ue(); cb = b.ue() }
-        val vuiPos = b.pos
-        val vui = b.u(1) == 1
-        val unitX = if (chroma == 0) 1 else 2
-        val unitY = (if (chroma == 0) 1 else 2) * (2 - frameMbsOnly)
-        val outW = w - unitX * (cl + cr)
-        val outH = h - unitY * (ct + cb)
-        if (outW in 16..8192 && outH in 16..8192) SpsInfo(outW, outH, rbsp, vuiPos, vui, numRef) else null
-    } catch (e: Exception) {
-        null
-    }
-
-    private class BitWriter {
-        private val out = ByteArrayOutputStream()
-        private var cur = 0
-        private var n = 0
-        fun bit(v: Int) {
-            cur = (cur shl 1) or (v and 1)
-            if (++n == 8) { out.write(cur); cur = 0; n = 0 }
-        }
-        fun ue(v: Int) {
-            val x = v + 1
-            val len = 32 - Integer.numberOfLeadingZeros(x)
-            repeat(len - 1) { bit(0) }
-            for (i in len - 1 downTo 0) bit((x shr i) and 1)
-        }
-        fun finish(): ByteArray {
-            bit(1) // bit final do RBSP
-            while (n != 0) bit(0)
-            return out.toByteArray()
-        }
-    }
-
-    /**
-     * O SPS da câmera não diz quantos quadros o decodificador precisa guardar; com nível 5.1
-     * o Android reserva até 16 e atrasa a imagem. Acrescentamos um VUI dizendo "sem reordenar,
-     * guarde 1 quadro", o que tira esse atraso. Se algo der errado, devolve o SPS original.
-     */
-    private fun lowLatencySps(sps: ByteArray): ByteArray = try {
-        val info = parseSps(sps)
-        if (info == null || info.vuiPresent || sps.isEmpty()) sps
-        else {
-            val w = BitWriter()
-            for (i in 0 until info.vuiPos) w.bit((info.rbsp[i shr 3].toInt() shr (7 - (i and 7))) and 1)
-            w.bit(1)                       // vui_parameters_present_flag
-            repeat(8) { w.bit(0) }         // aspect, overscan, video signal, chroma loc, timing, 2x HRD, pic_struct
-            w.bit(1)                       // bitstream_restriction_flag
-            w.bit(1)                       // motion_vectors_over_pic_boundaries_flag
-            w.ue(0); w.ue(0)               // max_bytes_per_pic_denom, max_bits_per_mb_denom
-            w.ue(16); w.ue(16)             // log2_max_mv_length_horizontal / vertical
-            w.ue(0)                        // max_num_reorder_frames
-            w.ue(maxOf(1, info.numRef))    // max_dec_frame_buffering
-            val body = w.finish()
-            val res = ByteArrayOutputStream()
-            res.write(sps[0].toInt())
-            var zeros = 0
-            for (x in body) {
-                val v = x.toInt() and 0xFF
-                if (zeros >= 2 && v <= 3) { res.write(3); zeros = 0 }
-                res.write(v)
-                zeros = if (v == 0) zeros + 1 else 0
-            }
-            res.toByteArray()
-        }
-    } catch (e: Exception) {
-        sps
+    private companion object {
+        const val TAG = "DashLive"
     }
 }

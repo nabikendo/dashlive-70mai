@@ -7,6 +7,10 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.View
 import kotlin.math.abs
@@ -29,6 +33,11 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
     private val rect = RectF()
     private var phase = 0f
     private var lastFrame = 0L
+    private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE8EAED.toInt() }
+    private var msgLayout: StaticLayout? = null
+    private var msgText: String? = null
+    private var msgWidth = 0
+    private var msgSize = 0f
 
     var message: String? = null
         set(v) { field = v; invalidate() }
@@ -127,19 +136,39 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         // seu carro
         drawEgo(cv, cx, ey, pxPerM)
 
-        // textos
+        // textos: abaixo dos selos "AO VIVO" e do nome da câmera (16 dp de margem + 40 dp de altura)
+        val dp = resources.displayMetrics.density
         p.style = Paint.Style.FILL
         p.color = 0xFF9AA0A6.toInt()
         p.textSize = h * 0.032f
         p.textAlign = Paint.Align.LEFT
-        cv.drawText("Simulação • posições estimadas • $fps det/s", w * 0.03f, h * 0.06f, p)
-        message?.let {
-            p.color = 0xFFE8EAED.toInt()
-            p.textAlign = Paint.Align.CENTER
-            p.textSize = h * 0.04f
-            cv.drawText(it, cx, h * 0.5f, p)
-        }
+        cv.drawText("Simulação • posições estimadas • $fps det/s", 20 * dp, 68 * dp + p.textSize, p)
+        message?.let { drawMessage(cv, it, w, h) }
         postInvalidateOnAnimation() // a faixa desliza continuamente
+    }
+
+    /** Mensagem no meio da tela, quebrando linha para caber (erros podem ser longos). */
+    private fun drawMessage(cv: Canvas, text: String, w: Float, h: Float) {
+        val maxW = (w * 0.84f).toInt().coerceAtLeast(1)
+        tp.textSize = h * 0.032f
+        val layout = msgLayout?.takeIf { msgText == text && msgWidth == maxW && msgSize == tp.textSize }
+            ?: StaticLayout.Builder.obtain(text, 0, text.length, tp, maxW)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setMaxLines(6)
+                .setEllipsize(TextUtils.TruncateAt.END)
+                .build()
+                .also { msgLayout = it; msgText = text; msgWidth = maxW; msgSize = tp.textSize }
+        val pad = tp.textSize * 0.6f
+        val top = h * 0.5f - layout.height / 2f
+        val left = (w - maxW) / 2f
+        p.style = Paint.Style.FILL
+        p.color = 0xCC0B0D10.toInt()
+        rect.set(left - pad, top - pad, left + maxW + pad, top + layout.height + pad)
+        cv.drawRoundRect(rect, pad, pad, p)
+        cv.save()
+        cv.translate(left, top)
+        layout.draw(cv)
+        cv.restore()
     }
 
     private fun drawEgo(cv: Canvas, cx: Float, ey: Float, pxPerM: Float) {

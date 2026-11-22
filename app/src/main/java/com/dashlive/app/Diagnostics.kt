@@ -69,10 +69,11 @@ object Diagnostics {
 
         if (rtspPort != null) {
             val rear = "rtsp://$ip:$rtspPort/livestream/13"
-            out.append("\nCâmera traseira (/livestream/13)\n")
+            // Na A200 testada o canal 13 também mostra a frontal; por isso o nome neutro
+            out.append("\nCanal 13 (/livestream/13)\n")
             out.append("  SDP:\n").append(sdpOf(ip, rtspPort, rear)).append("\n")
             out.append("  via TCP: ${tcpTest(ip, rtspPort, rear)}\n")
-            out.append("\nDuas câmeras ao mesmo tempo (12 e 13, TCP, 3 s)\n")
+            out.append("\nDois vídeos ao mesmo tempo (12 e 13, TCP, 3 s)\n")
             out.append(dualTest(ip, rtspPort)).append("\n")
         }
 
@@ -212,9 +213,17 @@ object Diagnostics {
             }.also { it.start() }
         }
         threads.forEach { it.join(9000) }
-        return listOf("frontal /12", "traseira /13").mapIndexed { i, name ->
+        val lines = listOf("canal 12", "canal 13").mapIndexed { i, name ->
             "  $name: " + (errors[i] ?: if (counts[i] > 0) "OK, ${counts[i]} bytes" else "nenhum dado")
-        }.joinToString("\n")
+        }
+        val both = counts.all { it > 0 }
+        val one = counts.count { it > 0 } == 1
+        val verdict = when {
+            both -> "  → a câmera envia dois vídeos juntos; a segunda câmera ao lado pode ficar ligada."
+            one -> "  → a câmera envia um vídeo por vez; deixe \"segunda câmera ao lado\" desligada nos Ajustes."
+            else -> null
+        }
+        return (lines + listOfNotNull(verdict)).joinToString("\n")
     }
 
     private fun tcpTest(ip: String, port: Int, url: String): String {

@@ -48,13 +48,17 @@ jobs:
           fi
 
       - name: Baixar modelo de detecção (EfficientDet-Lite0, Apache 2.0)
+        # Precisa ser a versão da TFLite Task Library (com metadados e TFLite_Detection_PostProcess,
+        # 4 saídas). A versão do MediaPipe tem só 2 saídas e o ObjectDetector recusa
+        # ("Mobile SSD models are expected to have exactly 4 outputs, found 2").
         run: |
           mkdir -p app/src/main/assets
           F=app/src/main/assets/efficientdet_lite0.tflite
           for u in \
-            "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite" \
+            "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/object_detection/android/lite-model_efficientdet_lite0_detection_metadata_1.tflite" \
             "https://tfhub.dev/tensorflow/lite-model/efficientdet/lite0/detection/metadata/1?lite-format=tflite"; do
-            curl -fL --retry 3 -o "$F" "$u" && [ "$(stat -c%s "$F")" -gt 2000000 ] && break
+            curl -fL --retry 3 -o "$F" "$u" && [ "$(stat -c%s "$F")" -gt 2000000 ] \
+              && grep -q TFLite_Detection_PostProcess "$F" && break
             rm -f "$F"
           done
           if [ ! -f "$F" ]; then

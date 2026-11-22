@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.4.0"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 11
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.4.1"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 12
 
 android {
     namespace = "com.dashlive.app"
@@ -37,6 +37,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Instala ao lado do app oficial (assinaturas diferentes não deixam substituir)
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             // Sem a chave (build local), cai na chave de debug só para compilar
@@ -65,4 +70,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // Detecção de carros, pessoas etc. no próprio tablet (simulação da estrada)
     implementation("org.tensorflow:tensorflow-lite-task-vision:0.4.4")
+
+    testImplementation("junit:junit:4.13.2")
 }

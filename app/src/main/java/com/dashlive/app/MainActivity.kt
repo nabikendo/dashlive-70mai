@@ -20,6 +20,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -53,6 +54,14 @@ class MainActivity : AppCompatActivity() {
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
     private var wifiNetwork: Network? = null
     private var fullscreen = false
+    /** Em tela cheia, o "voltar" do sistema sai da tela cheia em vez de fechar o app. */
+    private val exitFullscreenOnBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = setFullscreen(false)
+    }
+    /** Algum vídeo chegou desde o último (re)início? Separa "câmera ocupada" de "câmera fora do ar". */
+    private var sawVideo = false
+    /** Quedas da câmera principal com a segunda ligada (horários), para detectar câmera de um vídeo só. */
+    private val dualDrops = ArrayDeque<Long>()
     /** Alterna UDP/TCP a cada falha, porque algumas câmeras só entregam por um deles. */
     private var autoTcp = false
 
@@ -79,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     private var detCount = 0
     private var detFps = 0
     private var detSecStart = 0L
+    private var dumpNextFrame = false
     private val detectTick = object : Runnable {
         override fun run() {
             if (!roadMode) return
@@ -145,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         }
         b.rearTexture.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitRear() }
         b.btnReload.setOnClickListener { startPlayback() }
+        onBackPressedDispatcher.addCallback(this, exitFullscreenOnBack)
         b.btnFullscreen.setOnClickListener { setFullscreen(true) }
         b.btnExitFs.setOnClickListener { setFullscreen(false) }
         b.playerView.setOnClickListener { if (fullscreen) setFullscreen(false) }
@@ -288,6 +299,7 @@ class MainActivity : AppCompatActivity() {
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
+        sawVideo = false
         if (useNative) startNative() else startExo()
         // A segunda câmera entra um instante depois, para a principal abrir primeiro
         handler.postAtTime({ startRear() }, REAR, SystemClock.uptimeMillis() + 1200)
@@ -333,7 +345,7 @@ class MainActivity : AppCompatActivity() {
         val p = NativePlayer(
             surface, "rtsp://$camIp:554$rearPath",
             onSize = { w, h -> runOnUiThread { rearW = w; rearH = h; fitRear() } },
-            onLive = { runOnUiThread { b.rearOverlay.visibility = View.GONE } },
+            onLive = { runOnUiThread { sawVideo = true; b.rearOverlay.visibility = View.GONE } },
             onError = { msg ->
                 runOnUiThread {
                     stopRear()
@@ -363,7 +375,13 @@ class MainActivity : AppCompatActivity() {
         val p = NativePlayer(
             surface, streamUrl,
             onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; fitVideo() } },
-            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp") } },
+            onLive = {
+                runOnUiThread {
+                    sawVideo = true
+                    markWorked()
+                    setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp")
+                }
+            },
             onError = { msg -> runOnUiThread { onNativeFailed(msg) } },
         )
         nativePlayer = p
@@ -373,7 +391,27 @@ class MainActivity : AppCompatActivity() {
     private fun onNativeFailed(msg: String) {
         stopNative()
         if (!engineProven) useNative = false
+        if (dual && singleStreamCamera()) return
         scheduleRetry("Sem sinal da câmera: $msg")
+    }
+
+    /**
+     * A A200 entrega um vídeo por vez: com a segunda câmera ligada, a sessão dela derruba a da
+     * principal (que fica sem dados) e as duas caem em revezamento para sempre. Se a principal cai
+     * duas vezes em 1 minuto depois de algum vídeo ter chegado (ou seja, a câmera está lá), a
+     * segunda câmera é desligada e a principal volta sozinha. Devolve true se desligou.
+     */
+    private fun singleStreamCamera(): Boolean {
+        if (!sawVideo) return false
+        val now = SystemClock.uptimeMillis()
+        dualDrops.addLast(now)
+        while (dualDrops.isNotEmpty() && now - dualDrops.first() > 60_000) dualDrops.removeFirst()
+        if (dualDrops.size < 2) return false
+        dualDrops.clear()
+        dual = false
+        toast("A câmera envia um vídeo por vez. A segunda câmera foi desligada (dá para religar em Ajustes).")
+        startPlayback()
+        return true
     }
 
     private fun stopNative() {
@@ -490,6 +528,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
+        exitFullscreenOnBack.isEnabled = on
         val v = if (on) View.GONE else View.VISIBLE
         b.sidePanel.visibility = v
         b.dock.visibility = v
@@ -706,6 +745,7 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(detectTick)
         b.roadView.clear()
         if (roadMode) {
+            dumpNextFrame = true
             b.roadView.message = if (useNative) "Procurando veículos…" else "A simulação precisa do player nativo"
             handler.post(detectTick)
         }
@@ -718,28 +758,31 @@ class MainActivity : AppCompatActivity() {
         if (!tv.isAvailable || tv.width == 0 || tv.height == 0 || videoW <= 0 || videoH <= 0) {
             detecting.set(false); return
         }
-        val s = 480f / tv.width
-        val bw = (tv.width * s).toInt().coerceAtLeast(2)
-        val bh = (tv.height * s).toInt().coerceAtLeast(2)
+        // getBitmap() ignora a matriz de encaixe (setTransform): devolve o quadro inteiro da câmera
+        // esticado no tamanho pedido. Pedindo na proporção do vídeo, sai o quadro certo, sem recorte.
+        // (Antes recortava o "centro" achando que havia barras pretas e o detector via só a faixa
+        // do meio da imagem, esticada na vertical.)
+        val bw = 480
+        val bh = (bw.toFloat() * videoH / videoW).toInt().coerceAtLeast(2)
         val bmp: Bitmap? = try {
-            val full = tv.getBitmap(bw, bh) ?: throw IllegalStateException("sem quadro")
-            // recorta só a área do vídeo (tira as barras pretas do encaixe)
-            val sc = minOf(bw.toFloat() / videoW, bh.toFloat() / videoH)
-            val vw = (videoW * sc).toInt().coerceIn(2, bw)
-            val vh = (videoH * sc).toInt().coerceIn(2, bh)
-            Bitmap.createBitmap(full, (bw - vw) / 2, (bh - vh) / 2, vw, vh)
+            tv.getBitmap(bw, bh)
         } catch (e: Exception) {
             null
         }
         if (bmp == null) { detecting.set(false); return }
+        // Build de teste: guarda o primeiro quadro que o detector recebe, para conferir o recorte
+        val dump = BuildConfig.DEBUG && dumpNextFrame
+        dumpNextFrame = false
         detectExec.execute {
             try {
+                if (dump) runCatching {
+                    File(getExternalFilesDir(null), "road_frame.png").outputStream().use {
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, it)
+                    }
+                }
                 val det = roadDetector ?: RoadDetector(this).also { roadDetector = it }
                 if (!det.available) {
-                    runOnUiThread {
-                        b.roadView.message = "Modelo de detecção não encontrado neste APK" +
-                            (det.error?.let { "\n$it" } ?: "")
-                    }
+                    runOnUiThread { b.roadView.message = det.error ?: "Detecção indisponível" }
                     return@execute
                 }
                 val seen = det.detect(bmp)
