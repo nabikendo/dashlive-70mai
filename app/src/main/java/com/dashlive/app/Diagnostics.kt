@@ -67,12 +67,21 @@ object Diagnostics {
             out.append("  via TCP: $tcp\n  via UDP: $udp\n")
         }
 
+        if (rtspPort != null) {
+            val rear = "rtsp://$ip:$rtspPort/livestream/13"
+            out.append("\nCâmera traseira (/livestream/13)\n")
+            out.append("  SDP:\n").append(sdpOf(ip, rtspPort, rear)).append("\n")
+            out.append("  via TCP: ${tcpTest(ip, rtspPort, rear)}\n")
+            out.append("\nDuas câmeras ao mesmo tempo (12 e 13, TCP, 3 s)\n")
+            out.append(dualTest(ip, rtspPort)).append("\n")
+        }
+
         out.append("\nHTTP\n")
         if (80 !in open && 8080 !in open) {
             out.append("  portas 80 e 8080 fechadas; nenhum teste feito\n")
         } else {
             val port = if (80 in open) 80 else 8080
-            for (path in httpPaths) out.append("  $path  →  ${http(ip, port, path)}\n")
+            for (path in httpPaths) out.append("  $path  →  ${http(ip, port, path, if (path.contains("getdeviceattr")) 900 else 120)}\n")
         }
 
         out.append("\n")
@@ -121,14 +130,14 @@ object Diagnostics {
         "erro (${e.javaClass.simpleName})"
     }
 
-    private fun http(ip: String, port: Int, path: String): String = try {
+    private fun http(ip: String, port: Int, path: String, max: Int = 120): String = try {
         val c = URL("http://$ip:$port$path").openConnection() as HttpURLConnection
         c.connectTimeout = 2500
         c.readTimeout = 3000
         val code = c.responseCode
         val body = (if (code >= 400) c.errorStream else c.inputStream)
             ?.bufferedReader()?.use { r ->
-                val buf = CharArray(120)
+                val buf = CharArray(max)
                 val n = r.read(buf)
                 if (n > 0) String(buf, 0, n).replace('\n', ' ').replace('\r', ' ') else ""
             }.orEmpty()
@@ -172,6 +181,40 @@ object Diagnostics {
         val p = r.request("PLAY", base, listOfNotNull(session?.let { "Session: $it" }, "Range: npt=0.000-"))
         if (p.code != 200) return r to "PLAY ${p.status}"
         return r to null
+    }
+
+    /** Abre as duas câmeras juntas e conta os bytes de cada uma. */
+    private fun dualTest(ip: String, port: Int): String {
+        val counts = LongArray(2)
+        val errors = arrayOfNulls<String>(2)
+        val urls = listOf("rtsp://$ip:$port/livestream/12", "rtsp://$ip:$port/livestream/13")
+        val threads = urls.mapIndexed { i, url ->
+            Thread {
+                var r: Rtsp? = null
+                try {
+                    val (rtsp, err) = startSession(ip, port, url, "RTP/AVP/TCP;unicast;interleaved=0-1")
+                    r = rtsp
+                    if (err != null) { errors[i] = err; return@Thread }
+                    rtsp.setTimeout(1000)
+                    val inp = rtsp.stream()
+                    val buf = ByteArray(8192)
+                    val start = System.nanoTime()
+                    while (System.nanoTime() - start < 3_000_000_000L) {
+                        val n = try { inp.read(buf) } catch (e: SocketTimeoutException) { 0 }
+                        if (n < 0) break
+                        counts[i] += n.toLong()
+                    }
+                } catch (e: Exception) {
+                    errors[i] = "erro (${e.javaClass.simpleName})"
+                } finally {
+                    r?.close()
+                }
+            }.also { it.start() }
+        }
+        threads.forEach { it.join(9000) }
+        return listOf("frontal /12", "traseira /13").mapIndexed { i, name ->
+            "  $name: " + (errors[i] ?: if (counts[i] > 0) "OK, ${counts[i]} bytes" else "nenhum dado")
+        }.joinToString("\n")
     }
 
     private fun tcpTest(ip: String, port: Int, url: String): String {

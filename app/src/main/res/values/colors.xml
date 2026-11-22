@@ -1,18 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tema claro: painel estilo Tesla/Xiaomi (fundo gelo, cartões brancos) -->
+<!-- Paleta escura estilo Android Auto: fundo quase preto, cartões grafite, destaque azul -->
 <resources>
-    <color name="bg">#FFE9EDF2</color>
-    <color name="card">#FFFFFFFF</color>
-    <color name="card_alt">#FFF3F5F8</color>
-    <color name="text">#FF0F172A</color>
-    <color name="text_muted">#FF5B6576</color>
-    <color name="border">#FFDCE2EA</color>
-    <color name="icon">#FF1E293B</color>
-    <color name="primary">#FF1E293B</color>
-    <color name="on_primary">#FFFFFFFF</color>
-    <color name="live">#FFDC2626</color>
-    <color name="ok">#FF15803D</color>
-    <color name="warn">#FFB45309</color>
-    <color name="video_bg">#FF05070A</color>
+    <color name="bg">#FF0B0D10</color>
+    <color name="card">#FF1A1C20</color>
+    <color name="card_alt">#FF25282D</color>
+    <color name="text">#FFE8EAED</color>
+    <color name="text_muted">#FF9AA0A6</color>
+    <color name="border">#FF2C2F34</color>
+    <color name="icon">#FFC4C7CC</color>
+    <color name="primary">#FF8AB4F8</color>
+    <color name="on_primary">#FF062E6F</color>
+    <color name="accent_container">#FF2F4469</color>
+    <color name="on_accent_container">#FFD3E3FD</color>
+    <color name="live">#FFF28B82</color>
+    <color name="ok">#FF81C995</color>
+    <color name="warn">#FFFDD663</color>
+    <color name="video_bg">#FF000000</color>
     <color name="scrim">#B3000000</color>
 </resources>

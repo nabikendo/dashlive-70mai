@@ -64,6 +64,12 @@ class MainActivity : AppCompatActivity() {
     private var videoW = 0
     private var videoH = 0
 
+    // Câmera da direita (a outra do par frontal/traseira), sempre pelo player nativo
+    private var rearPlayer: NativePlayer? = null
+    private var rearSurface: Surface? = null
+    private var rearW = 0
+    private var rearH = 0
+
     private var pendingRelease: Updater.Release? = null
     private var downloadedApk: File? = null
     private var downloading = false
@@ -74,6 +80,10 @@ class MainActivity : AppCompatActivity() {
     private var channel: Int
         get() = prefs.getInt("channel", 12)
         set(v) = prefs.edit().putInt("channel", v).apply()
+    private var dual: Boolean
+        get() = prefs.getBoolean("dual", true)
+        set(v) = prefs.edit().putBoolean("dual", v).apply()
+    private val rearChannel: Int get() = if (channel == 12) 13 else 12
     private var forceTcp: Boolean
         get() = prefs.getBoolean("tcp", false)
         set(v) = prefs.edit().putBoolean("tcp", v).apply()
@@ -98,11 +108,22 @@ class MainActivity : AppCompatActivity() {
         hideSystemBars()
 
         b.valVersion.text = BuildConfig.VERSION_NAME
-        b.btnChannel.setOnClickListener {
-            channel = if (channel == 12) 13 else 12
-            refreshInfo()
-            startPlayback()
+        b.btnChannel.setOnClickListener { swapCameras() }
+        b.rearCard.setOnClickListener { swapCameras() }
+        b.rearTexture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                if (rearPlayer == null) startRear()
+            }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = fitRear()
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                stopRear()
+                rearSurface?.release()
+                rearSurface = null
+                return true
+            }
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
         }
+        b.rearTexture.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitRear() }
         b.btnReload.setOnClickListener { startPlayback() }
         b.btnFullscreen.setOnClickListener { setFullscreen(true) }
         b.btnExitFs.setOnClickListener { setFullscreen(false) }
@@ -220,7 +241,7 @@ class MainActivity : AppCompatActivity() {
         wifiCallback = cb
         cm.requestNetwork(request, cb)
         // Alguns aparelhos não chamam onAvailable: tenta mesmo assim depois de 4 s
-        handler.postDelayed({ if (player == null) startPlayback() }, 4000)
+        handler.postDelayed({ if (player == null && nativePlayer == null) startPlayback() }, 4000)
     }
 
     /** A câmera é o roteador da própria rede Wi-Fi: seu IP é o gateway. */
@@ -238,6 +259,46 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
         if (useNative) startNative() else startExo()
+        // A segunda câmera entra um instante depois, para a principal abrir primeiro
+        handler.postAtTime({ startRear() }, REAR, SystemClock.uptimeMillis() + 1200)
+    }
+
+    private fun swapCameras() {
+        channel = rearChannel
+        refreshInfo()
+        startPlayback()
+    }
+
+    private fun startRear() {
+        handler.removeCallbacksAndMessages(REAR)
+        stopRear()
+        b.rearCard.visibility = if (dual) View.VISIBLE else View.GONE
+        if (!dual) return
+        val st = b.rearTexture.surfaceTexture
+        if (!b.rearTexture.isAvailable || st == null) return // o listener reinicia quando ficar pronto
+        b.rearOverlay.visibility = View.VISIBLE
+        b.rearOverlay.text = "Conectando…"
+        val surface = rearSurface ?: Surface(st).also { rearSurface = it }
+        val p = NativePlayer(
+            surface, "rtsp://$camIp:554/livestream/$rearChannel",
+            onSize = { w, h -> runOnUiThread { rearW = w; rearH = h; fitRear() } },
+            onLive = { runOnUiThread { b.rearOverlay.visibility = View.GONE } },
+            onError = { msg ->
+                runOnUiThread {
+                    stopRear()
+                    b.rearOverlay.visibility = View.VISIBLE
+                    b.rearOverlay.text = "Sem sinal desta câmera\n$msg"
+                    handler.postAtTime({ startRear() }, REAR, SystemClock.uptimeMillis() + 5000)
+                }
+            },
+        )
+        rearPlayer = p
+        p.start()
+    }
+
+    private fun stopRear() {
+        rearPlayer?.stop()
+        rearPlayer = null
     }
 
     private fun startNative() {
@@ -251,7 +312,7 @@ class MainActivity : AppCompatActivity() {
         val p = NativePlayer(
             surface, streamUrl,
             onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; fitVideo() } },
-            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp") } },
+            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "${cameraName(channel)} • $camIp") } },
             onError = { msg -> runOnUiThread { onNativeFailed(msg) } },
         )
         nativePlayer = p
@@ -269,20 +330,26 @@ class MainActivity : AppCompatActivity() {
         nativePlayer = null
     }
 
+    /** Canal 12 = frontal, 13 = traseira (como no app oficial). */
+    private fun cameraName(ch: Int) = if (ch == 12) "Frontal" else "Traseira"
+
     private fun markWorked() {
         engineProven = true
         prefs.edit().putBoolean("native", useNative).apply()
     }
 
     /** Mantém a proporção do vídeo dentro do cartão (barras pretas se precisar). */
-    private fun fitVideo() {
-        val v = b.textureView
-        if (videoW <= 0 || videoH <= 0 || v.width == 0 || v.height == 0) return
+    private fun fitVideo() = fit(b.textureView, videoW, videoH)
+
+    private fun fitRear() = fit(b.rearTexture, rearW, rearH)
+
+    private fun fit(v: TextureView, srcW: Int, srcH: Int) {
+        if (srcW <= 0 || srcH <= 0 || v.width == 0 || v.height == 0) return
         val vw = v.width.toFloat()
         val vh = v.height.toFloat()
-        val scale = minOf(vw / videoW, vh / videoH)
+        val scale = minOf(vw / srcW, vh / srcH)
         val m = Matrix()
-        m.setScale(videoW * scale / vw, videoH * scale / vh, vw / 2, vh / 2)
+        m.setScale(srcW * scale / vw, srcH * scale / vh, vw / 2, vh / 2)
         v.setTransform(m)
     }
 
@@ -309,7 +376,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
-                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp") }
+                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "${cameraName(channel)} • $camIp") }
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
@@ -332,6 +399,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        handler.removeCallbacksAndMessages(REAR)
+        stopRear()
         stopNative()
         b.playerView.player = null
         player?.release()
@@ -357,9 +426,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshInfo() {
-        b.lblChannel.text = "Canal $channel"
+        b.mainLabel.text = cameraName(channel)
+        b.rearLabel.text = cameraName(rearChannel)
         b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
-        b.valChannel.text = channel.toString()
+        b.valChannel.text = "${cameraName(channel)} (canal $channel)"
         b.valProto.text = when {
             useNative -> "Nativo / TCP"
             forceTcp || autoTcp -> "ExoPlayer / TCP"
@@ -372,8 +442,9 @@ class MainActivity : AppCompatActivity() {
         val v = if (on) View.GONE else View.VISIBLE
         b.sidePanel.visibility = v
         b.dock.visibility = v
+        b.mainLabel.visibility = if (on) View.GONE else View.VISIBLE
         b.btnExitFs.visibility = if (on) View.VISIBLE else View.GONE
-        val pad = if (on) 0 else (16 * resources.displayMetrics.density).toInt()
+        val pad = if (on) 0 else (12 * resources.displayMetrics.density).toInt()
         b.main.setPadding(pad, pad, pad, pad)
         b.videoCard.setBackgroundColor(getColor(R.color.video_bg))
         if (!on) b.videoCard.setBackgroundResource(R.drawable.bg_video)
@@ -394,7 +465,11 @@ class MainActivity : AppCompatActivity() {
             text = "Forçar RTSP por TCP (use se a imagem não abrir)"
             isChecked = forceTcp
         }
-        box.addView(ipField); box.addView(urlField); box.addView(tcpBox)
+        val dualBox = CheckBox(this).apply {
+            text = "Mostrar as duas câmeras (frontal e traseira)"
+            isChecked = dual
+        }
+        box.addView(ipField); box.addView(urlField); box.addView(tcpBox); box.addView(dualBox)
 
         AlertDialog.Builder(this)
             .setTitle("Ajustes")
@@ -403,10 +478,11 @@ class MainActivity : AppCompatActivity() {
                 ip = ipField.text.toString().trim()
                 customUrl = urlField.text.toString().trim()
                 forceTcp = tcpBox.isChecked
+                dual = dualBox.isChecked
                 refreshInfo(); startPlayback()
             }
             .setNeutralButton("Padrão") { _, _ ->
-                ip = ""; customUrl = ""; forceTcp = false; channel = 12
+                ip = ""; customUrl = ""; forceTcp = false; dual = true; channel = 12
                 refreshInfo(); startPlayback()
             }
             .setNegativeButton("Cancelar", null)
@@ -542,5 +618,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private val RETRY = Any()
+        private val REAR = Any()
     }
 }

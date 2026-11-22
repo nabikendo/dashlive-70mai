@@ -29,7 +29,9 @@ class NativePlayer(
     private var thread: Thread? = null
 
     private val startCode = byteArrayOf(0, 0, 0, 1)
-    private var codec: MediaCodec? = null
+    @Volatile private var codec: MediaCodec? = null
+    @Volatile private var alive = false
+    private var drainThread: Thread? = null
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
     private var gotKey = false
@@ -87,6 +89,8 @@ class NativePlayer(
         } catch (e: Exception) {
             error = e.message ?: e.javaClass.simpleName
         } finally {
+            alive = false
+            runCatching { drainThread?.join(600) }
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             codec = null
@@ -104,7 +108,7 @@ class NativePlayer(
             val nal = runCatching { Base64.decode(b64.trim(), Base64.DEFAULT) }.getOrNull() ?: return@forEach
             if (nal.isEmpty()) return@forEach
             when (nal[0].toInt() and 0x1F) {
-                7 -> sps = nal
+                7 -> sps = lowLatencySps(nal)
                 8 -> pps = nal
             }
         }
@@ -221,7 +225,13 @@ class NativePlayer(
     private fun nal(data: ByteArray, off: Int, size: Int) {
         if (size <= 0) return
         when (data[off].toInt() and 0x1F) {
-            7 -> sps = data.copyOfRange(off, off + size)
+            7 -> {
+                val fixed = lowLatencySps(data.copyOfRange(off, off + size))
+                sps = fixed
+                au.write(startCode)
+                au.write(fixed)
+                return
+            }
             8 -> pps = data.copyOfRange(off, off + size)
             5 -> auHasKey = true
             9 -> return // delimitador de unidade
@@ -243,8 +253,12 @@ class NativePlayer(
             gotKey = true
         }
         val c = codec ?: return
-        val idx = c.dequeueInputBuffer(20_000)
-        if (idx >= 0) {
+        val idx = c.dequeueInputBuffer(4_000)
+        if (idx < 0) {
+            gotKey = false // decodificador atrasado: pula até o próximo quadro-chave
+            return
+        }
+        run {
             val ib = c.getInputBuffer(idx) ?: return
             ib.clear()
             if (bytes.size <= ib.capacity()) {
@@ -257,7 +271,6 @@ class NativePlayer(
                 c.queueInputBuffer(idx, 0, 0, 0, 0)
             }
         }
-        drain(c)
     }
 
     private fun initCodec(): Boolean {
@@ -268,7 +281,10 @@ class NativePlayer(
         fmt.setByteBuffer("csd-0", ByteBuffer.wrap(startCode + s))
         fmt.setByteBuffer("csd-1", ByteBuffer.wrap(startCode + p))
         runCatching { fmt.setInteger("low-latency", 1) }
+        runCatching { fmt.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1) } // Exynos (Samsung)
+        runCatching { fmt.setInteger("vendor.qti-ext-dec-low-latency.enable", 1) } // Qualcomm
         runCatching { fmt.setInteger(MediaFormat.KEY_PRIORITY, 0) }
+        runCatching { fmt.setInteger(MediaFormat.KEY_OPERATING_RATE, 120) }
         val c = MediaCodec.createDecoderByType("video/avc")
         try {
             c.configure(fmt, surface, null, 0)
@@ -278,17 +294,19 @@ class NativePlayer(
             fail("decodificador: ${e.message}")
         }
         codec = c
+        alive = true
+        drainThread = Thread({ drainLoop(c) }, "dashlive-out").also { it.start() }
         onSize(w, h)
         return true
     }
 
-    private fun drain(c: MediaCodec) {
+    private fun drainLoop(c: MediaCodec) {
         val info = MediaCodec.BufferInfo()
-        while (true) {
-            val i = c.dequeueOutputBuffer(info, 0)
+        while (alive) {
+            val i = try { c.dequeueOutputBuffer(info, 10_000) } catch (e: Exception) { return }
             when {
                 i >= 0 -> {
-                    c.releaseOutputBuffer(i, true) // mostra na hora
+                    runCatching { c.releaseOutputBuffer(i, true) } // mostra na hora
                     if (!live) { live = true; onLive() }
                 }
                 i == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
@@ -303,7 +321,7 @@ class NativePlayer(
                     }
                     onSize(w, h)
                 }
-                else -> return
+                else -> {}
             }
         }
     }
@@ -327,8 +345,15 @@ class NativePlayer(
         fun se(): Int { val k = ue(); return if (k % 2 == 1) (k + 1) / 2 else -(k / 2) }
     }
 
+    private class SpsInfo(
+        val w: Int, val h: Int, val rbsp: ByteArray,
+        val vuiPos: Int, val vuiPresent: Boolean, val numRef: Int,
+    )
+
     /** Lê largura e altura do SPS (H.264). Devolve null se não conseguir. */
-    private fun parseSpsSize(sps: ByteArray): Pair<Int, Int>? = try {
+    private fun parseSpsSize(sps: ByteArray): Pair<Int, Int>? = parseSps(sps)?.let { it.w to it.h }
+
+    private fun parseSps(sps: ByteArray): SpsInfo? = try {
         val raw = ByteArrayOutputStream()
         var zeros = 0
         for (i in 1 until sps.size) {
@@ -337,7 +362,8 @@ class NativePlayer(
             raw.write(x)
             zeros = if (x == 0) zeros + 1 else 0
         }
-        val b = Bits(raw.toByteArray())
+        val rbsp = raw.toByteArray()
+        val b = Bits(rbsp)
         val profile = b.u(8); b.u(8); b.u(8); b.ue()
         var chroma = 1
         if (profile in listOf(100, 110, 122, 244, 44, 83, 86, 118, 128)) {
@@ -361,7 +387,7 @@ class NativePlayer(
         val poc = b.ue()
         if (poc == 0) b.ue()
         else if (poc == 1) { b.u(1); b.se(); b.se(); repeat(b.ue()) { b.se() } }
-        b.ue(); b.u(1)
+        val numRef = b.ue(); b.u(1)
         val w = (b.ue() + 1) * 16
         val hMap = b.ue() + 1
         val frameMbsOnly = b.u(1)
@@ -370,12 +396,70 @@ class NativePlayer(
         b.u(1)
         var cl = 0; var cr = 0; var ct = 0; var cb = 0
         if (b.u(1) == 1) { cl = b.ue(); cr = b.ue(); ct = b.ue(); cb = b.ue() }
+        val vuiPos = b.pos
+        val vui = b.u(1) == 1
         val unitX = if (chroma == 0) 1 else 2
         val unitY = (if (chroma == 0) 1 else 2) * (2 - frameMbsOnly)
         val outW = w - unitX * (cl + cr)
         val outH = h - unitY * (ct + cb)
-        if (outW in 16..8192 && outH in 16..8192) outW to outH else null
+        if (outW in 16..8192 && outH in 16..8192) SpsInfo(outW, outH, rbsp, vuiPos, vui, numRef) else null
     } catch (e: Exception) {
         null
+    }
+
+    private class BitWriter {
+        private val out = ByteArrayOutputStream()
+        private var cur = 0
+        private var n = 0
+        fun bit(v: Int) {
+            cur = (cur shl 1) or (v and 1)
+            if (++n == 8) { out.write(cur); cur = 0; n = 0 }
+        }
+        fun ue(v: Int) {
+            val x = v + 1
+            val len = 32 - Integer.numberOfLeadingZeros(x)
+            repeat(len - 1) { bit(0) }
+            for (i in len - 1 downTo 0) bit((x shr i) and 1)
+        }
+        fun finish(): ByteArray {
+            bit(1) // bit final do RBSP
+            while (n != 0) bit(0)
+            return out.toByteArray()
+        }
+    }
+
+    /**
+     * O SPS da câmera não diz quantos quadros o decodificador precisa guardar; com nível 5.1
+     * o Android reserva até 16 e atrasa a imagem. Acrescentamos um VUI dizendo "sem reordenar,
+     * guarde 1 quadro", o que tira esse atraso. Se algo der errado, devolve o SPS original.
+     */
+    private fun lowLatencySps(sps: ByteArray): ByteArray = try {
+        val info = parseSps(sps)
+        if (info == null || info.vuiPresent || sps.isEmpty()) sps
+        else {
+            val w = BitWriter()
+            for (i in 0 until info.vuiPos) w.bit((info.rbsp[i shr 3].toInt() shr (7 - (i and 7))) and 1)
+            w.bit(1)                       // vui_parameters_present_flag
+            repeat(8) { w.bit(0) }         // aspect, overscan, video signal, chroma loc, timing, 2x HRD, pic_struct
+            w.bit(1)                       // bitstream_restriction_flag
+            w.bit(1)                       // motion_vectors_over_pic_boundaries_flag
+            w.ue(0); w.ue(0)               // max_bytes_per_pic_denom, max_bits_per_mb_denom
+            w.ue(16); w.ue(16)             // log2_max_mv_length_horizontal / vertical
+            w.ue(0)                        // max_num_reorder_frames
+            w.ue(maxOf(1, info.numRef))    // max_dec_frame_buffering
+            val body = w.finish()
+            val res = ByteArrayOutputStream()
+            res.write(sps[0].toInt())
+            var zeros = 0
+            for (x in body) {
+                val v = x.toInt() and 0xFF
+                if (zeros >= 2 && v <= 3) { res.write(3); zeros = 0 }
+                res.write(v)
+                zeros = if (v == 0) zeros + 1 else 0
+            }
+            res.toByteArray()
+        }
+    } catch (e: Exception) {
+        sps
     }
 }
