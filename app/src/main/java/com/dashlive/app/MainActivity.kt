@@ -1,7 +1,12 @@
 package com.dashlive.app
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.net.ConnectivityManager
@@ -96,7 +101,15 @@ class MainActivity : AppCompatActivity() {
     private val detectTick = object : Runnable {
         override fun run() {
             if (!roadMode) return
-            grabAndDetect()
+            // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
+            if (gpsOn && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+            if (roadDemo) {
+                b.roadView.message = null
+                b.roadView.update(demoScene(SystemClock.uptimeMillis() / 1000f))
+                if (b.roadView.speedKmh == null) b.roadView.speedKmh = 62f
+            } else {
+                grabAndDetect()
+            }
             handler.postDelayed(this, 80)
         }
     }
@@ -184,6 +197,9 @@ class MainActivity : AppCompatActivity() {
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnRoad.setOnClickListener { toggleRoad() }
+        roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
+        b.roadView.style = if (prefs.getString("roadStyle", "scene") == "video") RoadView.Style.VIDEO else RoadView.Style.SCENE
+        b.roadView.onStyleChange = { s -> prefs.edit().putString("roadStyle", if (s == RoadView.Style.VIDEO) "video" else "scene").apply() }
         b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
@@ -201,6 +217,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         if (roadMode && !rearLens) handler.post(detectTick)
+        if (roadMode) startSpeed()
         bindToCameraWifi()
         if (pendingRelease == null) checkForUpdate(manual = false)
     }
@@ -209,6 +226,7 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         handler.removeCallbacksAndMessages(null)
         releasePlayer()
+        stopSpeed()
         wifiCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         wifiCallback = null
         cm.bindProcessToNetwork(null)
@@ -469,7 +487,7 @@ class MainActivity : AppCompatActivity() {
         val surface = nativeSurface ?: Surface(st).also { nativeSurface = it }
         val p = NativePlayer(
             surface, streamUrl,
-            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; fitVideo() } },
+            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; b.roadView.setVideoSize(w, h); fitVideo() } },
             onLive = {
                 runOnUiThread {
                     sawVideo = true
@@ -847,6 +865,82 @@ class MainActivity : AppCompatActivity() {
                 else -> "A simulação precisa do player nativo"
             }
             if (!rearLens) handler.post(detectTick)
+            startSpeed()
+        } else {
+            stopSpeed()
+        }
+    }
+
+    /**
+     * Só no build de teste (`adb shell am start ... --ez roadDemo true`): objetos de mentira para
+     * conferir o desenho da Estrada sem precisar de trânsito na frente da câmera.
+     */
+    private var roadDemo = false
+
+    private fun demoScene(t: Float): List<Seen> {
+        fun at(kind: Kind, x: Float, z: Float, wM: Float, hM: Float): Seen {
+            val yb = 3.5f / z
+            val b = RoadView.HORIZON + yb * (1f - RoadView.HORIZON)
+            val cx = 0.5f + x / (2f * 1.2f * z)
+            val half = wM / (2f * 2f * 1.2f * z)
+            val ht = hM * yb * (1f - RoadView.HORIZON) / 1.3f
+            return Seen(kind, 0.9f, cx - half, b - ht, cx + half, b)
+        }
+        val wave = kotlin.math.sin(t * 0.6f)
+        return listOf(
+            at(Kind.CAR, 0.2f, 14f + 4f * wave, 1.8f, 1.5f),
+            at(Kind.TRUCK, -3.6f, 26f, 2.5f, 3.4f),
+            at(Kind.CAR, 3.4f, 9f - 2f * wave, 1.8f, 1.5f),
+            at(Kind.BUS, 3.7f, 38f, 2.5f, 3.1f),
+            at(Kind.MOTORCYCLE, -3.3f, 11f + 3f * wave, 0.8f, 1.5f),
+            at(Kind.PERSON, 6.6f, 7f, 0.6f, 1.7f),
+        )
+    }
+
+    // ---------------------------------------------------------------- velocidade (GPS do tablet)
+
+    private val lm by lazy { getSystemService(LocationManager::class.java) }
+    private var gpsOn = false
+    private var lastFixAt = 0L
+    private val gpsListener = object : LocationListener {
+        override fun onLocationChanged(loc: Location) {
+            lastFixAt = SystemClock.elapsedRealtime()
+            if (loc.hasSpeed()) b.roadView.speedKmh = loc.speed * 3.6f
+        }
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) { b.roadView.speedKmh = null }
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+    }
+
+    /** Liga o GPS para mostrar a velocidade na Estrada (pede a permissão na primeira vez). */
+    private fun startSpeed() {
+        if (gpsOn) return
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                REQ_LOCATION,
+            )
+            return
+        }
+        try {
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 500L, 0f, gpsListener, Looper.getMainLooper())
+            gpsOn = true
+        } catch (e: Exception) {
+            android.util.Log.w("DashLive", "GPS indisponível: ${e.message}")
+        }
+    }
+
+    private fun stopSpeed() {
+        if (gpsOn) runCatching { lm.removeUpdates(gpsListener) }
+        gpsOn = false
+        b.roadView.speedKmh = null
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_LOCATION && roadMode && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
+            startSpeed()
         }
     }
 
@@ -907,6 +1001,7 @@ class MainActivity : AppCompatActivity() {
         private val RETRY = Any()
         private val REAR = Any()
         private const val HEADUNIT_PKG = "com.andrerinas.headunitrevived"
+        private const val REQ_LOCATION = 42
 
         /** Todos os caminhos de vídeo que o app oficial da 70mai conhece. */
         private val SOURCES = listOf(
