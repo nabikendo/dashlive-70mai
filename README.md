@@ -5,9 +5,9 @@ App Android para ver ao vivo, no tablet, a câmera 70mai A200 (DR2210).
 ## O que foi descoberto no app oficial (v4.5.0)
 - O A200 aparece como "70mai Dash Cam A200", tipo 70, sem Bluetooth, e usa chip **HiSilicon**.
 - IP da câmera na rede Wi-Fi dela: `192.168.0.1`
-- Vídeo ao vivo: `rtsp://192.168.0.1:554/livestream/12` (frontal). O app oficial também conhece `13` e
-  `/liveRTSP/av1, av2, av4, av5, v1`, mas na A200 testada todos mostram a frontal
-- A câmera envia **um vídeo por vez**: deixe a "segunda câmera ao lado" desligada
+- Vídeo ao vivo: `rtsp://192.168.0.1:554/livestream/12`. A câmera envia **um vídeo por vez** (todos os
+  caminhos entregam a lente ativa); a lente é trocada por `/cgi-bin/setwifistream.cgi?&-sensor=0` (frontal)
+  ou `=1` (traseira). No app: botão **Câmeras**
 - Comandos HTTP no estilo `http://192.168.0.1/.../getdeviceattr.cgi` (não usados ainda)
 
 ## Como usar

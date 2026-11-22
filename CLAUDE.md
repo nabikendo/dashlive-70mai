@@ -10,7 +10,7 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 - SPS da câmera: High 5.1, 640x368 com corte para 360, 30 fps, `num_ref_frames=1`, **com** VUI (cor + timing) mas **sem** `bitstream_restriction`.
 - **Há câmera traseira.** A câmera tem UM vídeo ao vivo: os 7 caminhos (12, 13, av1, av2, av4, av5, v1) entregam a mesma lente, a que estiver ativa. O app oficial (`com.banyac.midrive.app.intl`, Flutter, toca `rtsp://192.168.0.1:554/livestream/12` com IJKPlayer) troca a lente por comando HTTP, e a câmera **guarda** a lente escolhida depois que o app fecha (o DashLive passa a mostrar a traseira).
 - API HTTP HiSilicon em `/cgi-bin/<nome>.cgi` (lista de dezenas de `get*/set*.cgi` no app oficial). Sem pareamento: `getdeviceattr`, `getvideoencode`, `getwifi` funcionam; `getrearstatus`, `setcamid`, `Config.cgi` devolvem `-4444` (exigem pareamento: `BindByBanya.cgi`, `SecretKeyConfirm.cgi`).
-- `setwifistream.cgi` responde `0` sem pareamento e **volta o vídeo para a frontal**, com qualquer parâmetro testado (`-camid=0/1/2/rear`, `camid`, `-streamid`, `-chn`, `-index`, `-cam`, `-camera`, `-sensor`, `-type`, `-ch`, `-id`, `-stream`). O comando da traseira ainda não foi descoberto: no Flutter é `interactor/hisi/api_set_switch_stream.dart` (`ApiSetSwitchStream`); no Java (classes3.dex) há `setcamid`, `camid`, `FRONT_CAM_ID/BACK_CAM_ID`, `Camera.Preview.Source.1.Camid`.
+- **Troca de lente (sem pareamento):** `http://192.168.0.1/cgi-bin/setwifistream.cgi?&-sensor=1` = traseira, `...?&-sensor=0` = frontal (ResultCode 0; o vídeo troca em ~0,4 s, sem precisar reconectar). Formato HiSilicon: `/cgi-bin/<nome>.cgi?&-<param>=<valor>`, o `&` logo após o `?` é obrigatório (`?-sensor=1` é ignorado e volta para a frontal). Achado descompilando o app oficial com jadx (`constants/c.java`: `setwifistream.cgi` + `X3 = "sensor"`; `c.d.a()` monta `&-nome=valor`). Implementado em `CameraApi.kt`; o app manda a lente salva (`rearLens`) antes de cada conexão.
 
 ## Código (app/src/main/java/com/dashlive/app)
 - `MainActivity.kt`: interface (estilo Android Auto), liga ao Wi-Fi da câmera (`bindProcessToNetwork`), escolhe motor de vídeo, atualização, diagnóstico, botões Câmeras / Estrada / Android Auto.
@@ -41,7 +41,7 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 
 ## Lista de testes
 - Abre sem fechar; mostra "Ao vivo" e imagem da frontal; medir o atraso (conferir a hora na tela).
-- Botão Câmeras: testar as 7 fontes e anotar qual mostra a traseira.
+- Botão Câmeras: frontal ↔ traseira trocam a imagem (testado em 22/11/2026, v1.5.0).
 - Botão Estrada: caixas/ícones aparecem? FPS de detecção? `getBitmap` do TextureView com a matriz de encaixe retorna o quadro certo?
 - Segunda câmera ao lado (Ajustes) — esperado falhar (uma sessão por vez).
 - Tela cheia, reconectar, perda e volta do Wi-Fi da câmera.

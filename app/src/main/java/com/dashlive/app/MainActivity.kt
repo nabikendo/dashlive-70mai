@@ -60,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     }
     /** Algum vídeo chegou desde o último (re)início? Separa "câmera ocupada" de "câmera fora do ar". */
     private var sawVideo = false
+    /** Muda a cada (re)início; descarta inícios atrasados que ainda esperavam a troca de lente. */
+    private var playGen = 0
     /** Quedas da câmera principal com a segunda ligada (horários), para detectar câmera de um vídeo só. */
     private val dualDrops = ArrayDeque<Long>()
     /** Alterna UDP/TCP a cada falha, porque algumas câmeras só entregam por um deles. */
@@ -111,6 +113,10 @@ class MainActivity : AppCompatActivity() {
     private var rearPath: String
         get() = prefs.getString("rearPath", SOURCES[1].second)!!
         set(v) = prefs.edit().putString("rearPath", v).apply()
+    /** Lente do vídeo ao vivo: a câmera tem um vídeo só e troca a lente por comando (ver CameraApi). */
+    private var rearLens: Boolean
+        get() = prefs.getBoolean("rearLens", false)
+        set(v) = prefs.edit().putBoolean("rearLens", v).apply()
     private var dual: Boolean
         get() = prefs.getBoolean("dual", false)
         set(v) = prefs.edit().putBoolean("dual", v).apply()
@@ -138,7 +144,7 @@ class MainActivity : AppCompatActivity() {
         hideSystemBars()
 
         b.valVersion.text = BuildConfig.VERSION_NAME
-        b.btnChannel.setOnClickListener { pickSource(main = true) }
+        b.btnChannel.setOnClickListener { pickCamera() }
         b.rearCard.setOnClickListener { pickSource(main = false) }
         b.rearTexture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
@@ -192,7 +198,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (roadMode) handler.post(detectTick)
+        if (roadMode && !rearLens) handler.post(detectTick)
         bindToCameraWifi()
         if (pendingRelease == null) checkForUpdate(manual = false)
     }
@@ -300,6 +306,19 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
         sawVideo = false
+        val gen = ++playGen
+        if (customUrl.isNotBlank()) { startStreams(); return }
+        // Garante a lente escolhida (o app oficial pode ter trocado) antes de abrir o vídeo
+        setState(State.CONNECTING, "Conectando", "${lensName()} • $camIp")
+        val ip = camIp
+        val rear = rearLens
+        Thread {
+            CameraApi.setLens(ip, rear)
+            runOnUiThread { if (gen == playGen) startStreams() }
+        }.start()
+    }
+
+    private fun startStreams() {
         if (useNative) startNative() else startExo()
         // A segunda câmera entra um instante depois, para a principal abrir primeiro
         handler.postAtTime({ startRear() }, REAR, SystemClock.uptimeMillis() + 1200)
@@ -313,7 +332,39 @@ class MainActivity : AppCompatActivity() {
         startPlayback()
     }
 
-    /** Lista as fontes de vídeo da câmera para o usuário descobrir qual é a frontal e qual é a traseira. */
+    /** Botão Câmeras: frontal ou traseira (troca a lente na câmera); endereços RTSP ficam no "avançado". */
+    private fun pickCamera() {
+        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)")
+        val cur = when {
+            customUrl.isNotBlank() -> -1
+            rearLens -> 1
+            else -> 0
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Câmera")
+            .setSingleChoiceItems(items, cur) { d, which ->
+                d.dismiss()
+                if (which == 2) { pickSource(main = true); return@setSingleChoiceItems }
+                rearLens = which == 1
+                customUrl = ""
+                refreshInfo()
+                startPlayback()
+                if (roadMode) { roadMode = false; toggleRoad() } // reaplica a Estrada para a lente nova
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun lensName() = if (rearLens) "Traseira" else "Frontal"
+
+    /** Nome da tela grande: a lente e, se não for o caminho padrão, o caminho RTSP. */
+    private fun mainName() = when {
+        customUrl.isNotBlank() -> "Endereço personalizado"
+        mainPath == SOURCES[0].second -> lensName()
+        else -> "${lensName()} • ${sourceName(mainPath)}"
+    }
+
+    /** Lista os caminhos RTSP da câmera (na A200 todos entregam a lente ativa). */
     private fun pickSource(main: Boolean) {
         val names = SOURCES.map { it.first }.toMutableList()
         if (dual) names += "Trocar a tela grande com a da direita"
@@ -379,7 +430,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     sawVideo = true
                     markWorked()
-                    setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp")
+                    setState(State.LIVE, "Ao vivo", "${mainName()} • $camIp")
                 }
             },
             onError = { msg -> runOnUiThread { onNativeFailed(msg) } },
@@ -465,7 +516,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
-                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp") }
+                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "${mainName()} • $camIp") }
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
@@ -515,10 +566,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshInfo() {
-        b.mainLabel.text = sourceName(mainPath)
+        b.mainLabel.text = mainName()
         b.rearLabel.text = sourceName(rearPath)
         b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
-        b.valChannel.text = sourceName(mainPath)
+        b.valChannel.text = mainName()
         b.valProto.text = when {
             useNative -> "Nativo / TCP"
             forceTcp || autoTcp -> "ExoPlayer / TCP"
@@ -746,8 +797,12 @@ class MainActivity : AppCompatActivity() {
         b.roadView.clear()
         if (roadMode) {
             dumpNextFrame = true
-            b.roadView.message = if (useNative) "Procurando veículos…" else "A simulação precisa do player nativo"
-            handler.post(detectTick)
+            b.roadView.message = when {
+                rearLens -> "A simulação usa a câmera frontal. Troque em Câmeras."
+                useNative -> "Procurando veículos…"
+                else -> "A simulação precisa do player nativo"
+            }
+            if (!rearLens) handler.post(detectTick)
         }
     }
 

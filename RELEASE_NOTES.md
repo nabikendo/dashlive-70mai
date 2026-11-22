@@ -1,9 +1,7 @@
 ## O que há de novo
-- **Menos atraso no vídeo:** o tablet segurava até 23 quadros antes de mostrar a imagem (~0,8 s). Agora mostra cada quadro assim que chega.
-- **Simulação da estrada funcionando:** o modelo de detecção incluído no APK era de um formato que o app não conseguia abrir (ficava em 0 det/s). Se algo falhar, a mensagem agora mostra a causa real, sem cortar o texto.
-- **Segunda câmera ao lado:** a A200 envia um vídeo por vez. Se a segunda câmera estiver ligada e derrubar a principal, o app desliga a segunda sozinho e avisa.
-- **Tela cheia:** o botão Voltar do tablet agora sai da tela cheia, em vez de fechar o app.
-- Diagnóstico: o canal 13 não é mais chamado de "traseira" (na A200 testada ele mostra a frontal).
+- **Câmera traseira:** o botão **Câmeras** agora tem **Câmera frontal** e **Câmera traseira**. A A200 envia um vídeo por vez; o DashLive pede à câmera a lente escolhida (o mesmo comando do app oficial) e a troca leva menos de 1 segundo. O app lembra a escolha.
+- Os endereços de vídeo (canal 12, 13, av1…) continuam em **Câmeras → Endereço de vídeo (avançado)**.
+- A simulação da estrada usa só a câmera frontal; com a traseira, ela avisa.
 
 ## Como instalar
 Baixe o arquivo `.apk` abaixo no tablet e instale por cima (ou use **Atualizar** dentro do app).
