@@ -77,13 +77,16 @@ class MainActivity : AppCompatActivity() {
     private var ip: String
         get() = prefs.getString("ip", "")!!
         set(v) = prefs.edit().putString("ip", v).apply()
-    private var channel: Int
-        get() = prefs.getInt("channel", 12)
-        set(v) = prefs.edit().putInt("channel", v).apply()
+    /** Fonte de vídeo da tela grande e da direita (caminho RTSP na câmera). */
+    private var mainPath: String
+        get() = prefs.getString("mainPath", SOURCES[0].second)!!
+        set(v) = prefs.edit().putString("mainPath", v).apply()
+    private var rearPath: String
+        get() = prefs.getString("rearPath", SOURCES[1].second)!!
+        set(v) = prefs.edit().putString("rearPath", v).apply()
     private var dual: Boolean
-        get() = prefs.getBoolean("dual", true)
+        get() = prefs.getBoolean("dual", false)
         set(v) = prefs.edit().putBoolean("dual", v).apply()
-    private val rearChannel: Int get() = if (channel == 12) 13 else 12
     private var forceTcp: Boolean
         get() = prefs.getBoolean("tcp", false)
         set(v) = prefs.edit().putBoolean("tcp", v).apply()
@@ -97,7 +100,7 @@ class MainActivity : AppCompatActivity() {
         get() = ip.ifBlank { detectedIp ?: "192.168.0.1" }
 
     private val streamUrl: String
-        get() = customUrl.ifBlank { "rtsp://$camIp:554/livestream/$channel" }
+        get() = customUrl.ifBlank { "rtsp://$camIp:554$mainPath" }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,8 +111,8 @@ class MainActivity : AppCompatActivity() {
         hideSystemBars()
 
         b.valVersion.text = BuildConfig.VERSION_NAME
-        b.btnChannel.setOnClickListener { swapCameras() }
-        b.rearCard.setOnClickListener { swapCameras() }
+        b.btnChannel.setOnClickListener { pickSource(main = true) }
+        b.rearCard.setOnClickListener { pickSource(main = false) }
         b.rearTexture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
                 if (rearPlayer == null) startRear()
@@ -264,9 +267,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun swapCameras() {
-        channel = rearChannel
+        val m = mainPath
+        mainPath = rearPath
+        rearPath = m
         refreshInfo()
         startPlayback()
+    }
+
+    /** Lista as fontes de vídeo da câmera para o usuário descobrir qual é a frontal e qual é a traseira. */
+    private fun pickSource(main: Boolean) {
+        val names = SOURCES.map { it.first }.toMutableList()
+        if (dual) names += "Trocar a tela grande com a da direita"
+        val cur = SOURCES.indexOfFirst { it.second == (if (main) mainPath else rearPath) }
+        AlertDialog.Builder(this)
+            .setTitle(if (main) "Câmera da tela grande" else "Câmera da direita")
+            .setSingleChoiceItems(names.toTypedArray(), cur) { d, which ->
+                d.dismiss()
+                if (which >= SOURCES.size) { swapCameras(); return@setSingleChoiceItems }
+                if (main) mainPath = SOURCES[which].second else rearPath = SOURCES[which].second
+                customUrl = ""
+                refreshInfo()
+                startPlayback()
+            }
+            .setNegativeButton("Fechar", null)
+            .show()
     }
 
     private fun startRear() {
@@ -280,7 +304,7 @@ class MainActivity : AppCompatActivity() {
         b.rearOverlay.text = "Conectando…"
         val surface = rearSurface ?: Surface(st).also { rearSurface = it }
         val p = NativePlayer(
-            surface, "rtsp://$camIp:554/livestream/$rearChannel",
+            surface, "rtsp://$camIp:554$rearPath",
             onSize = { w, h -> runOnUiThread { rearW = w; rearH = h; fitRear() } },
             onLive = { runOnUiThread { b.rearOverlay.visibility = View.GONE } },
             onError = { msg ->
@@ -312,7 +336,7 @@ class MainActivity : AppCompatActivity() {
         val p = NativePlayer(
             surface, streamUrl,
             onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; fitVideo() } },
-            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "${cameraName(channel)} • $camIp") } },
+            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp") } },
             onError = { msg -> runOnUiThread { onNativeFailed(msg) } },
         )
         nativePlayer = p
@@ -330,8 +354,8 @@ class MainActivity : AppCompatActivity() {
         nativePlayer = null
     }
 
-    /** Canal 12 = frontal, 13 = traseira (como no app oficial). */
-    private fun cameraName(ch: Int) = if (ch == 12) "Frontal" else "Traseira"
+    /** Nome amigável da fonte de vídeo. */
+    private fun sourceName(path: String) = SOURCES.firstOrNull { it.second == path }?.first ?: path
 
     private fun markWorked() {
         engineProven = true
@@ -376,7 +400,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
-                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "${cameraName(channel)} • $camIp") }
+                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "${sourceName(mainPath)} • $camIp") }
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
@@ -426,10 +450,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshInfo() {
-        b.mainLabel.text = cameraName(channel)
-        b.rearLabel.text = cameraName(rearChannel)
+        b.mainLabel.text = sourceName(mainPath)
+        b.rearLabel.text = sourceName(rearPath)
         b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
-        b.valChannel.text = "${cameraName(channel)} (canal $channel)"
+        b.valChannel.text = sourceName(mainPath)
         b.valProto.text = when {
             useNative -> "Nativo / TCP"
             forceTcp || autoTcp -> "ExoPlayer / TCP"
@@ -466,7 +490,7 @@ class MainActivity : AppCompatActivity() {
             isChecked = forceTcp
         }
         val dualBox = CheckBox(this).apply {
-            text = "Mostrar as duas câmeras (frontal e traseira)"
+            text = "Mostrar uma segunda câmera ao lado (a câmera pode aceitar só uma por vez)"
             isChecked = dual
         }
         box.addView(ipField); box.addView(urlField); box.addView(tcpBox); box.addView(dualBox)
@@ -482,7 +506,7 @@ class MainActivity : AppCompatActivity() {
                 refreshInfo(); startPlayback()
             }
             .setNeutralButton("Padrão") { _, _ ->
-                ip = ""; customUrl = ""; forceTcp = false; dual = true; channel = 12
+                ip = ""; customUrl = ""; forceTcp = false; dual = false; mainPath = SOURCES[0].second; rearPath = SOURCES[1].second
                 refreshInfo(); startPlayback()
             }
             .setNegativeButton("Cancelar", null)
@@ -619,5 +643,16 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private val RETRY = Any()
         private val REAR = Any()
+
+        /** Todos os caminhos de vídeo que o app oficial da 70mai conhece. */
+        private val SOURCES = listOf(
+            "Canal 12 (principal)" to "/livestream/12",
+            "Canal 13" to "/livestream/13",
+            "Fonte av1" to "/liveRTSP/av1",
+            "Fonte av2" to "/liveRTSP/av2",
+            "Fonte av4" to "/liveRTSP/av4",
+            "Fonte av5" to "/liveRTSP/av5",
+            "Fonte v1" to "/liveRTSP/v1",
+        )
     }
 }

@@ -26,7 +26,7 @@
             <LinearLayout
                 android:id="@+id/btnChannel"
                 style="@style/DockButton"
-                android:contentDescription="Trocar câmera principal">
+                android:contentDescription="Escolher câmera">
 
                 <ImageView
                     style="@style/DockIcon"
@@ -35,7 +35,7 @@
                 <TextView
                 android:id="@+id/lblChannel"
                     style="@style/DockLabel"
-                    android:text="Trocar" />
+                    android:text="Câmeras" />
             </LinearLayout>
 
             <LinearLayout
@@ -223,6 +223,7 @@
                 android:id="@+id/rearCard"
                 android:layout_width="match_parent"
                 android:layout_height="190dp"
+                android:visibility="gone"
                 android:background="@drawable/bg_video"
                 android:clickable="true"
                 android:clipToOutline="true"
