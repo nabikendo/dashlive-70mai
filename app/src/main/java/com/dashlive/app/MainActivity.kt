@@ -722,7 +722,7 @@ class MainActivity : AppCompatActivity() {
         val bw = (tv.width * s).toInt().coerceAtLeast(2)
         val bh = (tv.height * s).toInt().coerceAtLeast(2)
         val bmp: Bitmap? = try {
-            val full = tv.getBitmap(bw, bh)
+            val full = tv.getBitmap(bw, bh) ?: throw IllegalStateException("sem quadro")
             // recorta só a área do vídeo (tira as barras pretas do encaixe)
             val sc = minOf(bw.toFloat() / videoW, bh.toFloat() / videoH)
             val vw = (videoW * sc).toInt().coerceIn(2, bw)
