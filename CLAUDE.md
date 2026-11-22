@@ -18,6 +18,7 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 - `H264Sps.kt` (Kotlin puro, testado em `app/src/test`): lê o SPS e grava `bitstream_restriction` (`max_num_reorder_frames=0`) no VUI, exista VUI ou não. Sem isso o decodificador Exynos segura 23 quadros (`output.delay.value = 23` no logcat).
 - `RoadDetector.kt` + `RoadView.kt`: simulação da estrada estilo Tesla (EfficientDet-Lite0 via TensorFlow Lite Task). Posições/distâncias são estimativas; faixas são fixas. O modelo tem que ser a versão da Task Library (4 saídas, `TFLite_Detection_PostProcess`); a do MediaPipe (2 saídas) não abre.
 - `MainActivity`: com a segunda câmera ligada, duas quedas da principal em 1 min (depois de algum vídeo chegar) desligam a segunda sozinho.
+- Wi-Fi: o `NetworkRequest` casa com qualquer Wi-Fi. Ao desligar a câmera, o tablet entra no Wi-Fi de casa (ARIANE, gateway 192.168.5.1) e o Android NÃO volta sozinho para a câmera (prefere a rede com internet). Por isso `onAvailable` testa `getdeviceattr.cgi` no gateway (`CameraApi.isCamera`); se não for a câmera, mostra "Fora do Wi-Fi da câmera" (toque abre `Settings.Panel.ACTION_WIFI`) e não tenta o vídeo. Testado em 22/11/2026: volta ao vivo <1 s depois de reconectar.
 - Armadilha: `TextureView.getBitmap(w, h)` IGNORA a matriz de `setTransform` e devolve o quadro inteiro esticado em w×h. Peça na proporção do vídeo, sem recortar. No build debug, ligar a Estrada salva o 1º quadro do detector em `/sdcard/Android/data/com.dashlive.app.debug/files/road_frame.png`.
 - Medido em 22/11/2026 (Tab S9 FE, canal 12): atraso de 1,7–2,0 s na v1.4.0 → 0,8–1,2 s com o SPS corrigido; Estrada a ~12 det/s.
 - `libtask_vision_jni.so` (tensorflow-lite-task-vision 0.4.4) não é alinhada a 16 KB: o Android avisa no build debug. Funciona no tablet atual; vira problema em aparelhos com páginas de 16 KB.
@@ -44,5 +45,5 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 - Botão Câmeras: frontal ↔ traseira trocam a imagem (testado em 22/11/2026, v1.5.0).
 - Botão Estrada: caixas/ícones aparecem? FPS de detecção? `getBitmap` do TextureView com a matriz de encaixe retorna o quadro certo?
 - Segunda câmera ao lado (Ajustes) — esperado falhar (uma sessão por vez).
-- Tela cheia, reconectar, perda e volta do Wi-Fi da câmera.
+- Tela cheia, reconectar, perda e volta do Wi-Fi da câmera (desligar a câmera ~40 s com o DashLive aberto).
 - Atualizar (precisa de internet fora do Wi-Fi da câmera); Android Auto abre o Open Headunit (`com.andrerinas.headunitrevived`) se instalado.

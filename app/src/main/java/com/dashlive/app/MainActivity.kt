@@ -60,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     }
     /** Algum vídeo chegou desde o último (re)início? Separa "câmera ocupada" de "câmera fora do ar". */
     private var sawVideo = false
+    /** O tablet está num Wi-Fi que não é a câmera (ex.: o de casa quando a câmera desliga). */
+    private var offCameraWifi = false
     /** Muda a cada (re)início; descarta inícios atrasados que ainda esperavam a troca de lente. */
     private var playGen = 0
     /** Quedas da câmera principal com a segunda ligada (horários), para detectar câmera de um vídeo só. */
@@ -265,10 +267,14 @@ class MainActivity : AppCompatActivity() {
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                wifiNetwork = network
-                cm.bindProcessToNetwork(network)
-                detectedIp = gatewayOf(network)
-                handler.post { refreshInfo(); startPlayback() }
+                // O pedido casa com QUALQUER Wi-Fi (inclusive o de casa, quando a câmera desliga):
+                // confirma que é a câmera antes de usar o gateway como endereço dela.
+                Thread {
+                    val gw = gatewayOf(network)
+                    val manual = ip.isNotBlank() || customUrl.isNotBlank()
+                    val isCam = manual || (gw != null && CameraApi.isCamera(network, gw))
+                    handler.post { if (isCam) onCameraWifi(network, gw) else onOtherWifi(network) }
+                }.start()
             }
 
             override fun onLost(network: Network) {
@@ -276,6 +282,7 @@ class MainActivity : AppCompatActivity() {
                     wifiNetwork = null
                     cm.bindProcessToNetwork(null)
                     handler.post {
+                        handler.removeCallbacksAndMessages(RETRY)
                         releasePlayer()
                         setState(
                             State.ERROR, "Câmera desconectada",
@@ -291,6 +298,41 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed({ if (player == null && nativePlayer == null) startPlayback() }, 4000)
     }
 
+    private fun onCameraWifi(network: Network, gateway: String?) {
+        offCameraWifi = false
+        b.overlay.setOnClickListener(null)
+        b.overlay.isClickable = false
+        wifiNetwork = network
+        cm.bindProcessToNetwork(network)
+        detectedIp = gateway
+        refreshInfo()
+        startPlayback()
+    }
+
+    /** Wi-Fi que não é a câmera: não adianta tentar o vídeo (antes ficava batendo no roteador de casa). */
+    private fun onOtherWifi(network: Network) {
+        if (wifiNetwork != null && wifiNetwork != network) return // a câmera continua conectada
+        offCameraWifi = true
+        playGen++ // descarta inícios que ainda esperavam a troca de lente
+        wifiNetwork = null
+        cm.bindProcessToNetwork(null)
+        handler.removeCallbacksAndMessages(RETRY)
+        releasePlayer()
+        setState(
+            State.ERROR, "Fora do Wi-Fi da câmera",
+            "O tablet está em outra rede Wi-Fi (o Android prefere a que tem internet). " +
+                "Toque aqui para escolher o Wi-Fi 70mai Dash Cam A200-…"
+        )
+        // Toque no aviso abre o painel de Wi-Fi do Android por cima do app
+        b.overlay.setOnClickListener { openWifiPanel() }
+    }
+
+    private fun openWifiPanel() {
+        val panel = if (Build.VERSION.SDK_INT >= 29) android.provider.Settings.Panel.ACTION_WIFI
+        else android.provider.Settings.ACTION_WIFI_SETTINGS
+        runCatching { startActivity(android.content.Intent(panel)) }
+    }
+
     /** A câmera é o roteador da própria rede Wi-Fi: seu IP é o gateway. */
     private fun gatewayOf(n: Network): String? {
         val lp = cm.getLinkProperties(n) ?: return null
@@ -304,6 +346,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
+        if (offCameraWifi) return // espera o Wi-Fi da câmera voltar (onAvailable)
         releasePlayer()
         sawVideo = false
         val gen = ++playGen
@@ -319,6 +362,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startStreams() {
+        if (offCameraWifi) return
         if (useNative) startNative() else startExo()
         // A segunda câmera entra um instante depois, para a principal abrir primeiro
         handler.postAtTime({ startRear() }, REAR, SystemClock.uptimeMillis() + 1200)
