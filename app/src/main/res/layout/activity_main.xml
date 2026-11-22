@@ -330,6 +330,20 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/btnDiag"
+                style="@style/DockButton"
+                android:contentDescription="Diagnóstico">
+
+                <ImageView
+                    style="@style/DockIcon"
+                    android:src="@drawable/ic_info" />
+
+                <TextView
+                    style="@style/DockLabel"
+                    android:text="Diagnóstico" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/btnUpdate"
                 style="@style/DockButton"
                 android:contentDescription="Verificar atualização">

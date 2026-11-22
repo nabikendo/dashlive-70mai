@@ -91,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         b.btnExitFs.setOnClickListener { setFullscreen(false) }
         b.playerView.setOnClickListener { if (fullscreen) setFullscreen(false) }
         b.btnSettings.setOnClickListener { showSettings() }
+        b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
         refreshInfo()
@@ -190,7 +191,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                scheduleRetry("Sem sinal da câmera (${error.errorCodeName})")
+                val why = (error.cause?.message ?: error.message).orEmpty().take(110)
+                scheduleRetry("Sem sinal da câmera (${error.errorCodeName})\n$why")
             }
         })
         p.prepare()
@@ -363,6 +365,46 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    // ---------------------------------------------------------------- diagnóstico
+
+    private fun runDiagnostics() {
+        toast("Testando a câmera… leva uns 20 segundos")
+        val target = camIp
+        Thread {
+            val r = Diagnostics.run(target)
+            runOnUiThread { showDiagnostics(r) }
+        }.start()
+    }
+
+    private fun showDiagnostics(r: Diagnostics.Result) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val text = android.widget.TextView(this).apply {
+            this.text = r.report
+            typeface = android.graphics.Typeface.MONOSPACE
+            textSize = 13f
+            setTextIsSelectable(true)
+            setTextColor(getColor(R.color.text))
+            setPadding(pad, pad, pad, pad)
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(text) }
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Diagnóstico da câmera")
+            .setView(scroll)
+            .setNegativeButton("Fechar", null)
+            .setNeutralButton("Copiar") { _, _ ->
+                val cb = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cb.setPrimaryClip(android.content.ClipData.newPlainText("diagnostico", r.report))
+                toast("Copiado")
+            }
+        r.workingUrl?.let { url ->
+            builder.setPositiveButton("Usar e conectar") { _, _ ->
+                customUrl = url
+                refreshInfo(); startPlayback()
+            }
+        }
+        builder.show()
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
