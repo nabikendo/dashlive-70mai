@@ -1,6 +1,8 @@
 package com.dashlive.app
 
 import android.content.Context
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -10,6 +12,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
@@ -50,6 +54,15 @@ class MainActivity : AppCompatActivity() {
     private var fullscreen = false
     /** Alterna UDP/TCP a cada falha, porque algumas câmeras só entregam por um deles. */
     private var autoTcp = false
+
+    // Player nativo (H.264 + MediaCodec) é o principal; ExoPlayer fica como reserva.
+    // Enquanto nenhum dos dois mostrou imagem, alterna entre eles a cada falha.
+    private var useNative = prefs.getBoolean("native", true)
+    private var engineProven = false
+    private var nativePlayer: NativePlayer? = null
+    private var nativeSurface: Surface? = null
+    private var videoW = 0
+    private var videoH = 0
 
     private var pendingRelease: Updater.Release? = null
     private var downloadedApk: File? = null
@@ -92,6 +105,20 @@ class MainActivity : AppCompatActivity() {
         b.btnFullscreen.setOnClickListener { setFullscreen(true) }
         b.btnExitFs.setOnClickListener { setFullscreen(false) }
         b.playerView.setOnClickListener { if (fullscreen) setFullscreen(false) }
+        b.textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                if (useNative && nativePlayer == null) startPlayback()
+            }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = fitVideo()
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                stopNative()
+                nativeSurface?.release()
+                nativeSurface = null
+                return true
+            }
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        b.textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitVideo() }
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
@@ -168,6 +195,58 @@ class MainActivity : AppCompatActivity() {
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
         releasePlayer()
+        if (useNative) startNative() else startExo()
+    }
+
+    private fun startNative() {
+        b.playerView.visibility = View.GONE
+        b.textureView.visibility = View.VISIBLE
+        refreshInfo()
+        setState(State.CONNECTING, "Conectando", "$streamUrl  (nativo)")
+        val st = b.textureView.surfaceTexture
+        if (!b.textureView.isAvailable || st == null) return // o listener reinicia quando ficar pronto
+        val surface = nativeSurface ?: Surface(st).also { nativeSurface = it }
+        val p = NativePlayer(
+            surface, streamUrl,
+            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; fitVideo() } },
+            onLive = { runOnUiThread { markWorked(); setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp") } },
+            onError = { msg -> runOnUiThread { onNativeFailed(msg) } },
+        )
+        nativePlayer = p
+        p.start()
+    }
+
+    private fun onNativeFailed(msg: String) {
+        stopNative()
+        if (!engineProven) useNative = false
+        scheduleRetry("Sem sinal da câmera: $msg")
+    }
+
+    private fun stopNative() {
+        nativePlayer?.stop()
+        nativePlayer = null
+    }
+
+    private fun markWorked() {
+        engineProven = true
+        prefs.edit().putBoolean("native", useNative).apply()
+    }
+
+    /** Mantém a proporção do vídeo dentro do cartão (barras pretas se precisar). */
+    private fun fitVideo() {
+        val v = b.textureView
+        if (videoW <= 0 || videoH <= 0 || v.width == 0 || v.height == 0) return
+        val vw = v.width.toFloat()
+        val vh = v.height.toFloat()
+        val scale = minOf(vw / videoW, vh / videoH)
+        val m = Matrix()
+        m.setScale(videoW * scale / vw, videoH * scale / vh, vw / 2, vh / 2)
+        v.setTransform(m)
+    }
+
+    private fun startExo() {
+        b.textureView.visibility = View.GONE
+        b.playerView.visibility = View.VISIBLE
         refreshInfo()
         setState(State.CONNECTING, "Conectando", streamUrl + if (forceTcp || autoTcp) "  (TCP)" else "  (UDP)")
 
@@ -188,13 +267,14 @@ class MainActivity : AppCompatActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> setState(State.CONNECTING, "Carregando", streamUrl)
-                    Player.STATE_READY -> setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp")
+                    Player.STATE_READY -> { markWorked(); setState(State.LIVE, "Ao vivo", "Canal $channel • $camIp") }
                     Player.STATE_ENDED -> scheduleRetry("Transmissão encerrada")
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 autoTcp = !autoTcp
+                if (!engineProven) useNative = true
                 val why = (error.cause?.message ?: error.message).orEmpty().take(110)
                 scheduleRetry("Sem sinal da câmera (${error.errorCodeName})\n$why")
             }
@@ -210,6 +290,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun releasePlayer() {
+        stopNative()
         b.playerView.player = null
         player?.release()
         player = null
@@ -237,7 +318,11 @@ class MainActivity : AppCompatActivity() {
         b.lblChannel.text = "Canal $channel"
         b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
         b.valChannel.text = channel.toString()
-        b.valProto.text = if (forceTcp || autoTcp) "RTSP / TCP" else "RTSP / UDP"
+        b.valProto.text = when {
+            useNative -> "Nativo / TCP"
+            forceTcp || autoTcp -> "ExoPlayer / TCP"
+            else -> "ExoPlayer / UDP"
+        }
     }
 
     private fun setFullscreen(on: Boolean) {

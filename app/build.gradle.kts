@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.1.3"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 5
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.1.4"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 6
 
 android {
     namespace = "com.dashlive.app"
