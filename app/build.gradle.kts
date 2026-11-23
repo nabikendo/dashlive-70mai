@@ -43,6 +43,8 @@ android {
             // Instala ao lado do app oficial (assinaturas diferentes não deixam substituir)
             applicationIdSuffix = if (project.findProperty("isolatedRoadTest") == "true") ".estrada" else ".debug"
             versionNameSuffix = "-debug"
+            // No CI, a mesma chave em cada build permite atualizar a variante de teste.
+            signingConfig = signingConfigs.getByName(if (hasKey) "release" else "debug")
         }
         release {
             isMinifyEnabled = false
