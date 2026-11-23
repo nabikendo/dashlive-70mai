@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.8.0"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 18
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.8.1"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 19
 
 android {
     namespace = "com.dashlive.app"
@@ -41,8 +41,10 @@ android {
     buildTypes {
         debug {
             // Instala ao lado do app oficial (assinaturas diferentes não deixam substituir)
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = if (project.findProperty("isolatedRoadTest") == "true") ".estrada" else ".debug"
             versionNameSuffix = "-debug"
+            // No CI, a mesma chave em cada build permite atualizar a variante de teste.
+            signingConfig = signingConfigs.getByName(if (hasKey) "release" else "debug")
         }
         release {
             isMinifyEnabled = false

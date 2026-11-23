@@ -1,3 +1,15 @@
+## DashLive 1.8.1
+
+Correções na Estrada 3D, no aviso de Wi-Fi da câmera e no layout do painel.
+
+- **Estrada 3D.** Se a renderização falhar, a Estrada volta para a cena 2D e registra o erro, em vez de continuar tentando desenhar. No modo demonstração, a velocidade simulada de 62 km/h é sempre aplicada.
+- **Wi-Fi da câmera.** Enquanto o tablet procura a câmera, a Estrada mostra "Procurando veículos." Tocar no cartão de status abre o painel de Wi-Fi do Android.
+- **Painel.** No tablet, o aviso de estado deixa de cobrir a tela quando a Estrada está aberta.
+- **Build de debug.** Não mostra o botão de atualização e não verifica atualizações automaticamente.
+- **Teste de Estrada.** Branches `fix/*` geram também um APK separado (`DashLive-estrada.apk`) para testes isolados.
+
+Validação: testes unitários (70) e build de debug passaram. O comportamento no tablet e no carro ainda aguarda teste.
+
 ## DashLive 1.8.0
 
 Esta versão estável traz mapas offline, controles compactos para celular e dois alertas experimentais que usam a câmera frontal da 70mai A200.
