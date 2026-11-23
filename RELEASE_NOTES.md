@@ -1,13 +1,17 @@
-## DashLive 1.8.0-rc.1 · Prévia para teste
+## DashLive 1.8.0
 
-- **Colisão frontal (FCW).** A distância estimada usa a lente de 130° da A200. No vídeo de 640 × 360, o cálculo usa focal aproximada de 282 px e considera objetos até 1,8 m de cada lado do eixo da câmera. Para um carro de 1,5 m de altura, o limite teórico de detecção pelo tamanho da imagem é de cerca de 26 m.
-- **Saída de faixa (LDW).** Ative o aviso em Ajustes → Assistência. O app procura as duas marcações pintadas da pista e avalia a saída acima de 30 km/h. Com a seta do veículo disponível pelo OBD, o app suprime o aviso de saída para aquele lado. O recurso vem desligado.
-- **Som.** Os bipes usam o volume de mídia e podem tocar no modo vibrar. O modo silencioso mantém os avisos sem som.
-- **Mapas offline.** Em Ajustes → Mapas offline, selecione a região pela localização ou por um link do OpenStreetMap. O download guarda os blocos concluídos para permitir a retomada. Em municípios grandes, a cobertura alcança até 12 km do centro em cada direção. A Estrada consulta os dados salvos antes de buscar as ruas na internet.
-- **Câmeras e navegação.** O botão Câmeras alterna entre a frontal e a traseira da A200. A opção de exibir as duas ao mesmo tempo sai dos Ajustes. O celular ganha uma barra compacta com cinco ações. OBD2, diagnóstico, atualização e Android Auto ficam em Ajustes → Outros.
+Esta versão estável traz mapas offline, controles compactos para celular e dois alertas experimentais que usam a câmera frontal da 70mai A200.
 
-### Instalação e testes
+- **Mapas offline.** Em **Ajustes → Mapas offline**, escolha a região pela localização ou por um link do OpenStreetMap. Se o download for interrompido, o app aproveita os blocos já salvos. A Estrada consulta o pacote local antes da internet.
+- **Câmeras e controles.** O botão **Câmeras** alterna entre a frontal e a traseira. No celular, as cinco ações principais ficam na barra compacta. OBD2, diagnóstico, atualização e Android Auto ficam em **Ajustes → Outros**.
+- **Colisão frontal (FCW).** A estimativa de distância leva em conta a lente de 130° da A200 e a posição lateral do objeto em relação ao carro.
+- **Saída de faixa (LDW).** Acima de 30 km/h, o app usa as duas marcações da pista para avaliar a saída de faixa. Quando a seta está disponível pelo OBD, o app suprime o aviso para o lado sinalizado.
+- **Som.** Os bipes usam o volume de mídia e podem tocar no modo vibrar. No modo silencioso, os avisos ficam sem som.
 
-Baixe o APK anexado a esta prévia. Ele usa o mesmo pacote e a mesma assinatura da distribuição oficial e atualiza a instalação existente. O aplicativo separado “DashLive teste” usa o pacote de depuração.
+### Instalação e atualização
 
-O relato de teste no Tab S9 FE registra a demonstração do LDW e a leitura offline de 25 blocos da região de Wanderlândia (253 vias, aproximadamente 0,3 MB). A validação no Galaxy S24 FE e em trajeto real com a A200, incluindo a precisão dos alertas e a audibilidade dos bipes, continua pendente. FCW e LDW são experimentais.
+Baixe **DashLive-v1.8.0.apk** nos arquivos desta release. Quem já usa a v1.7.0 ou a prévia v1.8.0-rc.1 também pode atualizar pelo próprio DashLive, com acesso à internet. A versão de distribuição usa o pacote `com.dashlive.app`.
+
+### Validação
+
+O teste no Galaxy Tab S9 FE cobre a demonstração do LDW e a leitura offline de 25 blocos de Wanderlândia, com 253 vias e aproximadamente 0,3 MB. A assistência começa desligada. A precisão dos alertas e a audibilidade dos bipes em trajeto real com a A200, assim como o teste físico no Galaxy S24 FE, ainda aguardam validação.
