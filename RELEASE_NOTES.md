@@ -1,3 +1,13 @@
+## DashLive 1.9.1
+
+Correções na Estrada com trânsito real.
+
+- **Carros estacionados.** Veículos fora da pista ficam no acostamento, em fileiras com posições diferentes, e não mais na faixa da direita.
+- **Curvas mais suaves.** O traçado das ruas é suavizado, mantendo o mesmo número de pontos.
+- **Alerta de colisão.** Carros vindo de frente (contramão) não disparam mais o alerta.
+
+Limitações conhecidas: pistas separadas por canteiro ainda são desenhadas como uma pista só, e a regra de carros de frente funciona à noite, não de dia.
+
 ## DashLive 1.9.0
 
 Estrada com mais trânsito, carros vindo de frente e correções visuais.
