@@ -41,7 +41,7 @@ android {
     buildTypes {
         debug {
             // Instala ao lado do app oficial (assinaturas diferentes não deixam substituir)
-            applicationIdSuffix = ".debug"
+            applicationIdSuffix = if (project.findProperty("isolatedRoadTest") == "true") ".estrada" else ".debug"
             versionNameSuffix = "-debug"
         }
         release {

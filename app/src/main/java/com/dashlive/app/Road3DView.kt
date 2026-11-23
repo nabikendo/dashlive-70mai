@@ -1142,19 +1142,21 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
     override fun doFrame(frameTimeNanos: Long) {
         if (!running) return
-        Choreographer.getInstance().postFrameCallback(this)
-        val e = engine ?: return
-        val sc = swapChain ?: return
-        val dt = if (lastFrame == 0L) 0.016f else ((frameTimeNanos - lastFrame) / 1e9f).coerceIn(0f, 0.1f)
-        lastFrame = frameTimeNanos
         try {
+            val sc = swapChain ?: return
+            val dt = if (lastFrame == 0L) 0.016f else ((frameTimeNanos - lastFrame) / 1e9f).coerceIn(0f, 0.1f)
+            lastFrame = frameTimeNanos
             update(dt, frameTimeNanos / 1e9f)
+            if (renderer.beginFrame(sc, frameTimeNanos)) {
+                renderer.render(view)
+                renderer.endFrame()
+            }
         } catch (t: Throwable) {
-            Log.w("DashLive", "Estrada 3D: ${t.message}")
-        }
-        if (renderer.beginFrame(sc, frameTimeNanos)) {
-            renderer.render(view)
-            renderer.endFrame()
+            Log.e("DashLive", "Falha durante a renderização da Estrada 3D", t)
+            stop()
+            onError?.invoke(t.message ?: t.javaClass.simpleName)
+        } finally {
+            if (running) Choreographer.getInstance().postFrameCallback(this)
         }
     }
 

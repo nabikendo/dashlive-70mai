@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity() {
                 if (roadMode) {
                     b.roadView.message = null
                     b.roadView.update(scene)
-                    if (b.roadView.speedKmh == null) b.roadView.speedKmh = 62f
+                    b.roadView.speedKmh = 62f
                     // setas e faróis de mentira: esquerda 4 s, direita 4 s, nenhuma 4 s; farol alto a cada 12 s
                     val c = t % 12f
                     b.roadView.turnLeft = c < 4f
@@ -288,6 +288,10 @@ class MainActivity : AppCompatActivity() {
             } else checkForUpdate(manual = true)
         }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
+        if (BuildConfig.DEBUG) {
+            b.btnUpdate.visibility = View.GONE
+            b.updateCard.visibility = View.GONE
+        }
         b.carCard.setOnClickListener { showObdDialog() }
         adasConfig = AdasConfig(prefs)
         adas = AdasEngine(this, adasConfig).also { e -> e.listener = { r -> b.adasOverlay.show(r) } }
@@ -309,11 +313,11 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         restartDetect()
-        if (roadMode || adasOn) startSpeed()
+        if ((roadMode || adasOn) && !roadDemo) startSpeed()
         updateRoad3d()
         startObd()
         bindToCameraWifi()
-        if (pendingRelease == null) checkForUpdate(manual = false)
+        if (!BuildConfig.DEBUG && pendingRelease == null) checkForUpdate(manual = false)
     }
 
     override fun onStop() {
@@ -414,6 +418,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun onCameraWifi(network: Network, gateway: String?) {
         offCameraWifi = false
+        b.statusCard.setOnClickListener(null)
+        if (roadMode && !roadDemo) b.roadView.message = "Procurando veículos."
         b.overlay.setOnClickListener(null)
         b.overlay.isClickable = false
         wifiNetwork = network
@@ -427,6 +433,7 @@ class MainActivity : AppCompatActivity() {
     private fun onOtherWifi(network: Network) {
         if (wifiNetwork != null && wifiNetwork != network) return // a câmera continua conectada
         offCameraWifi = true
+        if (roadMode && !roadDemo) b.roadView.message = null
         playGen++ // descarta inícios que ainda esperavam a troca de lente
         wifiNetwork = null
         cm.bindProcessToNetwork(null)
@@ -439,6 +446,7 @@ class MainActivity : AppCompatActivity() {
         )
         // Toque no aviso abre o painel de Wi-Fi do Android por cima do app
         b.overlay.setOnClickListener { openWifiPanel() }
+        b.statusCard.setOnClickListener { openWifiPanel() }
     }
 
     private fun openWifiPanel() {
@@ -719,7 +727,7 @@ class MainActivity : AppCompatActivity() {
         )
         val live = state == State.LIVE
         b.livePill.visibility = if (live) View.VISIBLE else View.GONE
-        b.overlay.visibility = if (live) View.GONE else View.VISIBLE
+        b.overlay.visibility = if (live || (roadMode && !phone)) View.GONE else View.VISIBLE
         b.overlay.text = "$title\n$subtitle"
     }
 
@@ -1135,6 +1143,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleRoad() {
         roadMode = !roadMode
+        if (!phone) b.overlay.visibility = if (roadMode || b.livePill.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         b.roadView.visibility = if (roadMode) View.VISIBLE else View.GONE
         b.adasOverlay.visibility = if (roadMode) View.VISIBLE else View.GONE
         b.lblRoad.text = if (roadMode) "Vídeo" else "Estrada"
@@ -1148,11 +1157,12 @@ class MainActivity : AppCompatActivity() {
         if (roadMode) {
             dumpNextFrame = true
             b.roadView.message = when {
+                offCameraWifi && !roadDemo -> null // o aviso de Wi-Fi já está no vídeo
                 rearLens -> "A simulação usa a câmera frontal. Troque em Câmeras."
                 useNative -> "Procurando veículos…"
                 else -> "A simulação precisa do player nativo"
             }
-            startSpeed()
+            if (!roadDemo) startSpeed()
         } else if (!adasOn) {
             stopSpeed()
         }
