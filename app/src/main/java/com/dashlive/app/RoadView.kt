@@ -67,7 +67,10 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         set(v) { if (field != v) { field = v; tracks.clear() }; invalidate() }
 
     fun objects(): List<Obj> = tracks.map {
-        Obj(it.id, it.kind, it.x, if (rearView) -it.z else it.z, it.blinkL, it.blinkR, it.oncoming && !rearView)
+        // distância mínima desenhada: um carro muito perto da base da imagem (câmera com outra
+        // geometria, como a do celular) não pode virar um bloco colado na câmera
+        val z = if (rearView) -it.z else maxOf(it.z, MIN_DRAW_Z)
+        Obj(it.id, it.kind, it.x, z, it.blinkL, it.blinkR, it.oncoming && !rearView)
     }
 
     /** A cena 3D (Road3DView) está desenhando a estrada por baixo: aqui só o painel por cima. */
@@ -529,7 +532,7 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         for (t in tracks.sortedByDescending { it.b }) drawTarget(cv, t, vr, t === lead)
 
         // 5) seu carro por cima de tudo
-        drawEgoRear(cv, w / 2f, carBottom, carW)
+        // o seu carro não é desenhado na Estrada (só a pista e os veículos)
     }
 
     private fun drawTarget(cv: Canvas, t: Track, vr: RectF, isLead: Boolean) {
@@ -898,8 +901,11 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         private const val EGO_LEN = 4.5f
         /** Posição da câmera do painel a partir da traseira do seu carro (m). */
         private const val DASHCAM_Z = 2.6f
-        private const val CAM_H = 7.5f
-        private const val CAM_BACK = 9f
+        // câmera mais baixa e mais perto: a rua aparece maior na tela
+        private const val CAM_H = 5.0f
+        private const val CAM_BACK = 6f
+        /** Distância mínima (m) para desenhar um veículo na cena 3D. */
+        private const val MIN_DRAW_Z = 8f
         private const val PITCH_DEG = 26.0
         /** Na tela: horizonte e traseira do seu carro (fração da altura). */
         private const val HORIZON_Y = 0.24f

@@ -92,9 +92,13 @@ class MainActivity : AppCompatActivity() {
     private var nativeSurface: Surface? = null
     private var videoW = 0
     private var videoH = 0
+    /** Diagnóstico de gravação ligado (Ajustes → Diagnóstico); null = desligado. */
+    @Volatile private var diagLog: DiagLog? = null
     /** Câmera do celular no lugar da A200 (só build de teste, `--ez phoneCam true`). */
     private var phoneCam: PhoneCamera? = null
     private var phoneCamMode = false
+    /** Graus que a imagem da câmera do celular gira para ficar em pé (0, 90, 180, 270). */
+    private var phoneRot = 0
 
     // Câmera da direita (a outra do par frontal/traseira), sempre pelo player nativo
     private var rearPlayer: NativePlayer? = null
@@ -306,7 +310,8 @@ class MainActivity : AppCompatActivity() {
             }.onFailure { toast("Rota não carregada: ${it.message}") }.getOrNull()
             if (routeSim != null) fakeMap = true
         }
-        b.roadView.style = if (prefs.getString("roadStyle", "scene") == "video") RoadView.Style.VIDEO else RoadView.Style.SCENE
+        // câmera do celular (teste): abre no modo 2D com o vídeo, em tamanho grande
+        b.roadView.style = if (phoneCamMode || prefs.getString("roadStyle", "scene") == "video") RoadView.Style.VIDEO else RoadView.Style.SCENE
         b.roadView.onStyleChange = { s ->
             prefs.edit().putString("roadStyle", if (s == RoadView.Style.VIDEO) "video" else "scene").apply()
             fitVideo()
@@ -712,9 +717,19 @@ class MainActivity : AppCompatActivity() {
         if (!b.textureView.isAvailable || st == null) return // o listener reinicia quando ficar pronto
         setState(State.LIVE, "Câmera do celular (teste)", "traseira do aparelho")
         sawVideo = true
+        val displayDeg = windowManager.defaultDisplay.rotation * 90
         phoneCam = PhoneCamera(
-            this, st,
-            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; b.roadView.setVideoSize(w, h); b.adasOverlay.setVideoSize(w, h); fitVideo() } },
+            this, st, displayDeg,
+            onRotation = { r -> runOnUiThread { phoneRot = r; fitVideo() } },
+            rotOverride = intent.getIntExtra("phoneRot", -1).takeIf { it >= 0 },
+            onSize = { w, h ->
+                runOnUiThread {
+                    // tamanho "de pé": troca largura e altura quando a imagem está girada 90°
+                    val sw = phoneRot % 180 == 90
+                    videoW = if (sw) h else w; videoH = if (sw) w else h
+                    b.roadView.setVideoSize(videoW, videoH); b.adasOverlay.setVideoSize(videoW, videoH); fitVideo()
+                }
+            },
             onError = { msg -> runOnUiThread { toast(msg) } },
         ).also { it.start() }
     }
@@ -729,17 +744,24 @@ class MainActivity : AppCompatActivity() {
 
     /** Mantém a proporção do vídeo dentro do cartão (barras pretas se precisar). */
     /** Na Estrada "sobre o vídeo" o vídeo preenche o cartão (o RoadView usa a mesma regra). */
-    private fun fitVideo() = fit(b.textureView, videoW, videoH, cover = roadMode && b.roadView.style == RoadView.Style.VIDEO)
+    private fun fitVideo() = fit(
+        b.textureView, videoW, videoH,
+        // câmera do celular: preenche a tela (corta as laterais) em vez de deixar faixas pretas
+        cover = (roadMode && b.roadView.style == RoadView.Style.VIDEO) || phoneCamMode,
+        rot = if (phoneCamMode) phoneRot else 0,
+    )
 
     private fun fitRear() = fit(b.rearTexture, rearW, rearH)
 
-    private fun fit(v: TextureView, srcW: Int, srcH: Int, cover: Boolean = false) {
+    private fun fit(v: TextureView, srcW: Int, srcH: Int, cover: Boolean = false, rot: Int = 0) {
         if (srcW <= 0 || srcH <= 0 || v.width == 0 || v.height == 0) return
         val vw = v.width.toFloat()
         val vh = v.height.toFloat()
         val scale = RoadView.videoScale(srcW, srcH, vw, vh, cover)
         val m = Matrix()
         m.setScale(srcW * scale / vw, srcH * scale / vh, vw / 2, vh / 2)
+        // câmera do celular girada (90°, 180° ou 270°): gira a imagem na tela para ficar em pé
+        if (rot != 0) m.postRotate(rot.toFloat(), vw / 2, vh / 2)
         v.setTransform(m)
     }
 
@@ -1022,6 +1044,18 @@ class MainActivity : AppCompatActivity() {
             alpha = 0.7f
         })
 
+        section(box, "Diagnóstico")
+        val diagBox = CheckBox(this).apply {
+            text = "Gravar diagnóstico (dados e fotos) para análise"
+            isChecked = diagLog != null
+        }
+        box.addView(diagBox)
+        box.addView(TextView(this).apply {
+            text = "Liga ao usar a Estrada. Guarda, a cada quadro, a fonte, a velocidade e os objetos vistos, e uma foto a cada 3 s. Fica na pasta do app (diagnostico)."
+            textSize = 13f
+            alpha = 0.7f
+        })
+
         section(box, "Sobre")
         for ((k, v) in aboutLines()) {
             box.addView(TextView(this).apply { text = "$k: $v"; textSize = 15f })
@@ -1055,6 +1089,14 @@ class MainActivity : AppCompatActivity() {
             adasConfig.sensitivity = sensIds.entries.firstOrNull { it.value == sensGroup.checkedRadioButtonId }?.key
                 ?: Sensitivity.MEDIUM
             adasConfig.volume = volBar.progress
+            // diagnóstico: liga/desliga a gravação dos dados e fotos
+            if (diagBox.isChecked && diagLog == null) {
+                diagLog = DiagLog.start(this)
+                toast(if (diagLog != null) "Diagnóstico ligado" else "Sem armazenamento para o diagnóstico")
+            } else if (!diagBox.isChecked && diagLog != null) {
+                toast("Diagnóstico salvo em: ${diagLog!!.path()}")
+                diagLog = null
+            }
             autoRearOn = autoRearBox.isChecked
             autoRearHold = holdIds.entries.firstOrNull { it.value == holdGroup.checkedRadioButtonId }?.key ?: 3
             if (!autoRearOn && autoRearActive) setAutoRear(false)
@@ -1758,15 +1800,23 @@ class MainActivity : AppCompatActivity() {
         // (Antes recortava o "centro" achando que havia barras pretas e o detector via só a faixa
         // do meio da imagem, esticada na vertical.)
         val bw = 480
-        val bh = (bw.toFloat() * videoH / videoW).toInt().coerceAtLeast(2)
-        val bmp: Bitmap? = try {
+        // a câmera entrega o quadro na proporção do sensor; com a câmera do celular girada 90°,
+        // a proporção "de pé" é a inversa
+        val swapped = phoneCamMode && phoneRot % 180 == 90
+        val rawW = if (swapped) videoH else videoW
+        val rawH = if (swapped) videoW else videoH
+        val bh = (bw.toFloat() * rawH / rawW).toInt().coerceAtLeast(2)
+        val raw: Bitmap? = try {
             tv.getBitmap(bw, bh)
         } catch (e: Exception) {
             null
         }
+        // câmera do celular: gira o quadro para ficar em pé (o detector vê a cena como ela é)
+        val bmp: Bitmap? = if (raw != null && phoneCamMode && phoneRot != 0) rotateBitmap(raw, phoneRot) else raw
         if (bmp == null) { detecting.set(false); return }
         val vw = videoW; val vh = videoH
         val rearFrame = rearNow // lente deste quadro: a de ré não alimenta FCW/LDW
+        val diagSource = if (phoneCamMode) "celular" else "a200-" + (if (rearFrame) "traseira" else "frontal")
         // Build de teste: guarda o primeiro quadro que o detector recebe, para conferir o recorte
         val dump = BuildConfig.DEBUG && dumpNextFrame
         dumpNextFrame = false
@@ -1786,6 +1836,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val seen = det.detect(bmp)
                 val now = SystemClock.uptimeMillis()
+                diagLog?.frame(SystemClock.elapsedRealtime(), diagSource, egoSpeed(), seen, bmp)
                 // FCW na mesma thread, mesmo quadro, mesma inferência (o FcwLogic é só conta)
                 if (!rearFrame) adas?.onDetections(seen, vw, vh, egoSpeed(), now)
                 if (now - detSecStart > 1000) { detFps = detCount; detCount = 0; detSecStart = now }
@@ -1805,6 +1856,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    /** Gira um quadro em graus (0, 90, 180, 270) para ficar em pé. */
+    private fun rotateBitmap(src: Bitmap, deg: Int): Bitmap {
+        val m = Matrix().apply { postRotate(deg.toFloat()) }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
 
     companion object {
         private val RETRY = Any()

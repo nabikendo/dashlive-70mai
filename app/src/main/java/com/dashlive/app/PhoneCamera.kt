@@ -20,6 +20,12 @@ import android.view.Surface
 class PhoneCamera(
     private val ctx: Context,
     private val texture: SurfaceTexture,
+    /** Rotação da tela em graus (0, 90, 180, 270): o app fica na horizontal. */
+    private val displayDeg: Int,
+    /** Graus que a imagem precisa girar para ficar em pé na tela (sensor − tela). */
+    private val onRotation: (Int) -> Unit,
+    /** Rotação forçada pelo teste (extra phoneRot); se nula, usa o padrão do S24 FE. */
+    private val rotOverride: Int?,
     private val onSize: (Int, Int) -> Unit,
     private val onError: (String) -> Unit,
 ) {
@@ -34,7 +40,14 @@ class PhoneCamera(
         val id = cm.cameraIdList.firstOrNull {
             cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
         } ?: return onError("sem câmera traseira no celular")
-        val map = cm.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val chars = cm.getCameraCharacteristics(id)
+        val sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        // teste no S24 FE: a fórmula padrão (sensor − tela = 0°) deixou a imagem deitada; 270° ficou em pé.
+        // Outros celulares podem precisar de outro valor: use --ei phoneRot 0|90|180|270
+        val rot = rotOverride ?: 270
+        android.util.Log.i("DashLive", "câmera do celular: sensor=$sensor tela=$displayDeg girar=$rot")
+        onRotation(rot)
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         // tamanho de preview até 1280 px de largura, o maior que cabe
         val size = map?.getOutputSizes(SurfaceTexture::class.java)
             ?.filter { it.width <= 1280 }?.maxByOrNull { it.width * it.height } ?: Size(640, 480)

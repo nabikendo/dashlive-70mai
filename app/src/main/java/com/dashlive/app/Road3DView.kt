@@ -923,7 +923,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val (egoInst, box) = loadModel(e, "sedan.glb", 1, loader(e, "colormap_ego.png"))
         ego = egoInst[0]
         egoBox = box
-        ego?.let { scene.addEntities(it.entities) }
+        // o seu carro não aparece na Estrada (só os faróis, que iluminam a pista)
         place(ego!!, egoBox, 0f, 0f, EGO_W, EGO_H, EGO_L)
 
         // lanternas do seu carro (vermelhas, brilhando) e piscas âmbar por cima
@@ -932,7 +932,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             wall(-0.6f, 0.6f, 0.84f, 0.88f, 0f, rgba(0.5f, 0.5f, 0.5f))
         }
         egoTail = renderable(e, tail, material(1.7f, 0.04f, 0.03f, unlit = true))
-        setT(egoTail, 0f, 0f, EGO_L / 2f + 0.03f)
+        hide(egoTail)
         for (i in 0..1) {
             val sx = if (i == 0) -1f else 1f
             val m = Mesh().apply { wall(sx * 0.82f - 0.22f, sx * 0.82f + 0.22f, 0.76f, 0.94f, 0f, rgba(1f, 1f, 1f)) }
@@ -1203,8 +1203,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val blink = RoadView.blinkOn()
         val left = src?.turnLeft == true
         val right = src?.turnRight == true
-        if (left && blink) setT(egoBlink[0], 0f, 0f, EGO_L / 2f + 0.05f) else hide(egoBlink[0])
-        if (right && blink) setT(egoBlink[1], 0f, 0f, EGO_L / 2f + 0.05f) else hide(egoBlink[1])
+        // pisca do seu carro: não aparece (o carro não é desenhado)
+        hide(egoBlink[0]); hide(egoBlink[1])
 
         // veículos e pessoas
         val objs = src?.objects() ?: emptyList()
@@ -1249,7 +1249,10 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             seen += o.id
             when (o.kind) {
                 Kind.CAR, Kind.TRUCK, Kind.BUS -> {
-                    val pool = if (o.kind == Kind.CAR) carPools[o.id % carPools.size]
+                    // caminhão perto (abaixo de 15 m) é desenhado como carro: uma picape que o detector
+                    // classifica como caminhão não vira um bloco colado na câmera
+                    val asCar = o.kind == Kind.CAR || (o.kind == Kind.TRUCK && o.z < NEAR_TRUCK_AS_CAR_Z)
+                    val pool = if (asCar) carPools[o.id % carPools.size]
                         else if (truckPools.isEmpty()) continue
                         else truckPools[o.id % truckPools.size] // ônibus e caminhão: alternam os modelos
                     var slot = pool.owner.indexOf(o.id)
@@ -1335,7 +1338,10 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         private const val FOV = 38.0
         private const val CAM_H = 6.0
         private const val CAM_BACK = 16.5
-        private const val LANE = 3.5f
+        /** Caminhão mais perto que isto (m) é desenhado com o modelo de carro. */
+        private const val NEAR_TRUCK_AS_CAR_Z = 15f
+        // faixas mais largas na 3D (a câmera fica igual): a rua aparece maior
+        private const val LANE = 4.2f
         private const val ROAD_HALF = LANE * 1.5f + 0.3f
         private const val DASH_LEN = 3f
         private const val DASH_PERIOD = 9f
@@ -1350,7 +1356,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         private const val PATH_HALF = 1.0f
         private val IDENTITY = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f)
         /** Largura de uma faixa nas ruas do mapa (m). */
-        private const val LANE_W = 3.3f
+        private const val LANE_W = 4.0f
         private const val EGO_W = 1.85f
         private const val EGO_H = 1.45f
         private const val EGO_L = 4.5f

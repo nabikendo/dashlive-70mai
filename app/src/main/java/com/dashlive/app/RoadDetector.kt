@@ -85,6 +85,8 @@ class RoadDetector(context: Context) {
                     s.oncoming = Oncoming.isOncoming(head, tail)
                 }
             }
+            // caixa pequena demais para ser veículo ou pessoa: falso positivo (poste, sinal, reflexo)
+            if (!BoxFilter.keep(s.r - s.l, s.b - s.t)) continue
             out += s
         }
         return out
