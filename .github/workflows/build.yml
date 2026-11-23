@@ -81,6 +81,7 @@ jobs:
           gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
           "-PappVersionName=$APP_VERSION_NAME"
           "-PappVersionCode=$APP_VERSION_CODE"
+          "-PisolatedRoadTest=${{ startsWith(github.ref, 'refs/heads/fix/') }}"
 
       - name: Nomear APK
         env:
@@ -89,7 +90,7 @@ jobs:
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/DashLive-${RELEASE_TAG:-dev}.apk"
           if [[ "$GITHUB_REF" == refs/heads/fix/* ]]; then
-            cp app/build/outputs/apk/debug/app-debug.apk dist/DashLive-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk dist/DashLive-estrada.apk
           fi
           ls -la dist
 
