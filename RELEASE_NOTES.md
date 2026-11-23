@@ -1,3 +1,15 @@
+## DashLive 1.10.0
+
+Estrada mais limpa e diagnóstico para gravações.
+
+- **Diagnóstico de gravação.** Em Ajustes → Diagnóstico, liga o registro de dados (CSV, uma linha por objeto detectado) e uma foto a cada 3 s, para análise depois.
+- **Estrada.** O seu carro não aparece mais na Estrada. As faixas da 3D ficaram mais largas, e veículos muito perto são desenhados com distância mínima.
+- **Caminhões próximos.** Um caminhão a menos de 15 m é desenhado como carro, para evitar um bloco colado na câmera.
+- **Filtro de falsos positivos.** Caixas muito pequenas (postes, reflexos) são descartadas.
+- **Modo de teste com a câmera do celular** (só no build de debug). Abre em 2D, com o vídeo preenchendo a tela.
+
+Limitações conhecidas: a cena 3D com a câmera do celular ainda não reflete a posição real dos veículos; a validação com a A200 no carro ainda precisa ser feita.
+
 ## DashLive 1.9.1
 
 Correções na Estrada com trânsito real.
