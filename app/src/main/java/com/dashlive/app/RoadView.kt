@@ -57,7 +57,13 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
      */
     class Obj(val id: Int, val kind: Kind, val x: Float, val z: Float, val blinkL: Boolean = false, val blinkR: Boolean = false)
 
-    fun objects(): List<Obj> = tracks.map { Obj(it.id, it.kind, it.x, it.z, it.blinkL, it.blinkR) }
+    /** Câmera de ré: os objetos vistos estão ATRÁS do carro (a cena 3D os põe para trás). */
+    var rearView = false
+        set(v) { if (field != v) { field = v; tracks.clear() }; invalidate() }
+
+    fun objects(): List<Obj> = tracks.map {
+        Obj(it.id, it.kind, it.x, if (rearView) -it.z else it.z, it.blinkL, it.blinkR)
+    }
 
     /** A cena 3D (Road3DView) está desenhando a estrada por baixo: aqui só o painel por cima. */
     var scene3d = false

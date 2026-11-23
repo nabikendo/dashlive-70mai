@@ -369,49 +369,10 @@
                         android:layout_marginTop="10dp"
                         android:orientation="horizontal">
 
-                        <TextView style="@style/InfoLabel" android:text="Endereço" />
-
-                        <TextView
-                            android:id="@+id/valIp"
-                            style="@style/InfoValue" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
                         <TextView style="@style/InfoLabel" android:text="Câmera principal" />
 
                         <TextView
                             android:id="@+id/valChannel"
-                            style="@style/InfoValue" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
-                        <TextView style="@style/InfoLabel" android:text="Motor de vídeo" />
-
-                        <TextView
-                            android:id="@+id/valProto"
-                            style="@style/InfoValue" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
-                        <TextView style="@style/InfoLabel" android:text="Versão do app" />
-
-                        <TextView
-                            android:id="@+id/valVersion"
                             style="@style/InfoValue" />
                     </LinearLayout>
 

@@ -126,7 +126,7 @@ class MainActivity : AppCompatActivity() {
                 if (SystemClock.elapsedRealtime() - dayCheckedAt > 60_000) updateDay()
                 b.roadView.mapStatus = b.road3d.streetInfo ?: mapState
                 // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
-                if (roadDemo && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
+                if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
                 // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
                 if (gpsOn && !obdFresh && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
             }
@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity() {
                 if (roadMode) {
                     b.roadView.message = null
                     b.roadView.update(scene)
-                    b.roadView.speedKmh = 62f
+                    if (routeSim == null) b.roadView.speedKmh = 62f // com a rota, a velocidade vem da rota
                     // setas e faróis de mentira: esquerda 4 s, direita 4 s, nenhuma 4 s; farol alto a cada 12 s
                     val c = t % 12f
                     b.roadView.turnLeft = c < 4f
@@ -184,6 +184,40 @@ class MainActivity : AppCompatActivity() {
      * sessões, uma fica sem imagem —, então a opção saiu dos Ajustes. O código do 2º vídeo fica parado.
      */
     private val dual = false
+
+    /** Câmera de ré quando a seta liga (padrão: desligado). Ajustes → Câmera de ré. */
+    private var autoRearOn: Boolean
+        get() = prefs.getBoolean("autoRear", false)
+        set(v) = prefs.edit().putBoolean("autoRear", v).apply()
+    /** Segundos que a câmera de ré fica depois de apagar a seta (0, 3, 5 ou 10). */
+    private var autoRearHold: Int
+        get() = prefs.getInt("autoRearHold", 3)
+        set(v) = prefs.edit().putInt("autoRearHold", v).apply()
+    /** A câmera de ré está ativa agora por causa da seta (não muda a escolha salva em Câmeras). */
+    private var autoRearActive = false
+    /** Lente que a câmera deve ter agora: a escolhida em Câmeras ou a de ré pela seta. */
+    private val rearNow: Boolean get() = rearLens || autoRearActive
+
+    /** Troca a lente pela seta (sem mudar a escolha salva). Desligar volta para a lente escolhida. */
+    private fun setAutoRear(on: Boolean) {
+        if (autoRearActive == on) return
+        autoRearActive = on
+        val ip = camIp
+        val rear = rearNow
+        Thread { CameraApi.setLens(ip, rear) }.start()
+        b.roadView.rearView = rear
+        restartDetect()
+    }
+
+    /** Chamado quando a seta liga ou desliga (OBD2). Ao apagar, espera o tempo escolhido. */
+    private fun onTurnSignal(active: Boolean) {
+        if (!autoRearOn) return
+        handler.removeCallbacks(autoRearOff)
+        if (active) setAutoRear(true)
+        else if (autoRearActive) handler.postDelayed(autoRearOff, autoRearHold * 1000L)
+    }
+
+    private val autoRearOff = Runnable { if (!turnL && !turnR) setAutoRear(false) }
     private var forceTcp: Boolean
         get() = prefs.getBoolean("tcp", false)
         set(v) = prefs.edit().putBoolean("tcp", v).apply()
@@ -211,7 +245,6 @@ class MainActivity : AppCompatActivity() {
         applyCompactLayout()
         for (i in 0 until b.dock.childCount) (b.dock.getChildAt(i) as? LinearLayout)?.let { dockFeel(it) }
 
-        b.valVersion.text = BuildConfig.VERSION_NAME
         b.btnChannel.setOnClickListener { pickCamera() }
         b.rearCard.setOnClickListener { pickSource(main = false) }
         b.rearTexture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -258,6 +291,14 @@ class MainActivity : AppCompatActivity() {
             val lo = intent.getFloatExtra("mapLon", 0f).toDouble()
             b.road3d.onLocation(la, lo, intent.getFloatExtra("mapBearing", 0f))
             feedMap(la, lo)
+        }
+        // rota de teste (só build de teste): anda pelo rota.geojson a 60 km/h, com o mapa baixado
+        // adb push rota.geojson /sdcard/Android/data/com.dashlive.app.debug/files/rota.geojson
+        if (roadDemo && intent.getBooleanExtra("routeDemo", false)) {
+            routeSim = runCatching {
+                RouteSim.fromGeoJson(File(getExternalFilesDir(null), "rota.geojson").readText())
+            }.onFailure { toast("Rota não carregada: ${it.message}") }.getOrNull()
+            if (routeSim != null) fakeMap = true
         }
         b.roadView.style = if (prefs.getString("roadStyle", "scene") == "video") RoadView.Style.VIDEO else RoadView.Style.SCENE
         b.roadView.onStyleChange = { s ->
@@ -312,6 +353,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        if (routeSim != null) {
+            routeStartAt = SystemClock.elapsedRealtime()
+            handler.removeCallbacks(routeTick)
+            handler.post(routeTick)
+        }
         restartDetect()
         if ((roadMode || adasOn) && !roadDemo) startSpeed()
         updateRoad3d()
@@ -323,6 +369,13 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         handler.removeCallbacksAndMessages(null)
+        // a câmera guarda a última lente: se a de ré estava ligada pela seta, volta a escolhida
+        if (autoRearActive) {
+            autoRearActive = false
+            val ip = camIp
+            val rear = rearNow
+            Thread { CameraApi.setLens(ip, rear) }.start()
+        }
         releasePlayer()
         stopSpeed()
         stopObd()
@@ -476,7 +529,7 @@ class MainActivity : AppCompatActivity() {
         // Garante a lente escolhida (o app oficial pode ter trocado) antes de abrir o vídeo
         setState(State.CONNECTING, "Conectando", "${lensName()} • $camIp")
         val ip = camIp
-        val rear = rearLens
+        val rear = rearNow
         Thread {
             CameraApi.setLens(ip, rear)
             runOnUiThread { if (gen == playGen) startStreams() }
@@ -734,14 +787,19 @@ class MainActivity : AppCompatActivity() {
     private fun refreshInfo() {
         b.mainLabel.text = mainName()
         b.rearLabel.text = sourceName(rearPath)
-        b.valIp.text = if (customUrl.isBlank()) camIp else "personalizado"
         b.valChannel.text = mainName()
-        b.valProto.text = when {
+    }
+
+    /** Endereço, motor de vídeo e versão: ficam em Ajustes → Sobre (não poluem a tela principal). */
+    private fun aboutLines(): List<Pair<String, String>> = listOf(
+        "Endereço" to (if (customUrl.isBlank()) camIp else "personalizado"),
+        "Motor de vídeo" to when {
             useNative -> "Nativo / TCP"
             forceTcp || autoTcp -> "ExoPlayer / TCP"
             else -> "ExoPlayer / UDP"
-        }
-    }
+        },
+        "Versão do app" to BuildConfig.VERSION_NAME,
+    )
 
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
@@ -907,6 +965,35 @@ class MainActivity : AppCompatActivity() {
         box.addView(TextView(this).apply { text = "Sensibilidade"; setPadding(0, (10 * d).toInt(), 0, 0) })
         box.addView(sensGroup); box.addView(volLabel); box.addView(volBar)
 
+        section(box, "Câmera de ré")
+        val autoRearBox = CheckBox(this).apply {
+            text = "Mostrar a câmera de ré ao ligar a seta"
+            isChecked = autoRearOn
+        }
+        box.addView(autoRearBox)
+        val holdOptions = listOf(0, 3, 5, 10)
+        val holdIds = holdOptions.associateWith { View.generateViewId() }
+        val holdGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        for ((sec, id) in holdIds) {
+            holdGroup.addView(RadioButton(this).apply {
+                this.id = id
+                text = if (sec == 0) "Só enquanto a seta está ligada" else "Mais $sec s depois de apagar a seta"
+            })
+        }
+        holdGroup.check(holdIds[autoRearHold] ?: holdIds.getValue(3))
+        box.addView(TextView(this).apply { text = "Tempo com a câmera de ré depois da seta"; setPadding(0, (10 * d).toInt(), 0, 0) })
+        box.addView(holdGroup)
+        box.addView(TextView(this).apply {
+            text = "Padrão: desligado. A câmera volta para a frontal quando o tempo acaba. Precisa do OBD2 para ler as setas."
+            textSize = 13f
+            alpha = 0.7f
+        })
+
+        section(box, "Sobre")
+        for ((k, v) in aboutLines()) {
+            box.addView(TextView(this).apply { text = "$k: $v"; textSize = 15f })
+        }
+
         section(box, "Mapa da Estrada")
         box.addView(TextView(this).apply {
             text = "Guarde o mapa da sua cidade para ter a rua real sem internet (o tablet no carro fica no Wi-Fi da câmera)."
@@ -935,6 +1022,9 @@ class MainActivity : AppCompatActivity() {
             adasConfig.sensitivity = sensIds.entries.firstOrNull { it.value == sensGroup.checkedRadioButtonId }?.key
                 ?: Sensitivity.MEDIUM
             adasConfig.volume = volBar.progress
+            autoRearOn = autoRearBox.isChecked
+            autoRearHold = holdIds.entries.firstOrNull { it.value == holdGroup.checkedRadioButtonId }?.key ?: 3
+            if (!autoRearOn && autoRearActive) setAutoRear(false)
             if (adasOn) startSpeed() else if (!roadMode) stopSpeed()
             restartDetect()
         }
@@ -1158,7 +1248,6 @@ class MainActivity : AppCompatActivity() {
             dumpNextFrame = true
             b.roadView.message = when {
                 offCameraWifi && !roadDemo -> null // o aviso de Wi-Fi já está no vídeo
-                rearLens -> "A simulação usa a câmera frontal. Troque em Câmeras."
                 useNative -> "Procurando veículos…"
                 else -> "A simulação precisa do player nativo"
             }
@@ -1175,8 +1264,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun restartDetect() {
         handler.removeCallbacks(detectTick)
-        if ((roadMode || adasOn) && (!rearLens || roadDemo)) handler.post(detectTick)
-        if (!adasOn || (rearLens && !roadDemo)) {
+        // ADAS (FCW/LDW) só com a lente frontal; a Estrada roda também com a de ré
+        if (roadMode || (adasOn && (!rearNow || roadDemo))) handler.post(detectTick)
+        if (!adasOn || (rearNow && !roadDemo)) {
             b.adasOverlay.show(AdasState.NONE)
             detectExec.execute { adas?.reset() }
         }
@@ -1260,6 +1350,22 @@ class MainActivity : AppCompatActivity() {
      * conferir o desenho da Estrada sem precisar de trânsito na frente da câmera.
      */
     private var roadDemo = false
+
+    /** Rota de teste (`--ez routeDemo true`, com roadDemo): o carro anda pela rota do arquivo. */
+    private var routeSim: RouteSim? = null
+    private var routeStartAt = 0L
+    private val routeTick = object : Runnable {
+        override fun run() {
+            val sim = routeSim ?: return
+            val metres = (SystemClock.elapsedRealtime() - routeStartAt) / 1000.0 * RouteSim.SPEED_KMH / 3.6
+            val p = sim.at(metres)
+            b.road3d.onLocation(p.lat, p.lon, p.bearing)
+            feedMap(p.lat, p.lon)
+            egoKmh = RouteSim.SPEED_KMH.toFloat(); egoAt = SystemClock.elapsedRealtime()
+            if (roadMode) b.roadView.speedKmh = RouteSim.SPEED_KMH.toFloat()
+            handler.postDelayed(this, 500)
+        }
+    }
 
     private fun demoScene(t: Float): List<Seen> {
         fun at(kind: Kind, x: Float, z: Float, wM: Float, hM: Float): Seen {
@@ -1441,8 +1547,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var turnR = false
 
     private fun showLights(left: Boolean, right: Boolean, low: Boolean, high: Boolean) {
+        val wasTurning = turnL || turnR
         turnL = left
         turnR = right
+        if (wasTurning != (left || right)) onTurnSignal(left || right)
         b.carLowBeam.alpha = if (low) 1f else LIGHT_OFF
         b.carHighBeam.alpha = if (high) 1f else LIGHT_OFF
         if (!roadDemo) {
@@ -1609,6 +1717,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (bmp == null) { detecting.set(false); return }
         val vw = videoW; val vh = videoH
+        val rearFrame = rearNow // lente deste quadro: a de ré não alimenta FCW/LDW
         // Build de teste: guarda o primeiro quadro que o detector recebe, para conferir o recorte
         val dump = BuildConfig.DEBUG && dumpNextFrame
         dumpNextFrame = false
@@ -1621,7 +1730,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val det = roadDetector ?: RoadDetector(this).also { roadDetector = it }
                 // LDW: mesmo quadro, detecção de faixa sem modelo (funciona mesmo sem o detector)
-                adas?.onFrame(bmp, egoSpeed(), turnL, turnR, SystemClock.uptimeMillis())
+                if (!rearFrame) adas?.onFrame(bmp, egoSpeed(), turnL, turnR, SystemClock.uptimeMillis())
                 if (!det.available) {
                     if (roadMode) runOnUiThread { b.roadView.message = det.error ?: "Detecção indisponível" }
                     return@execute
@@ -1629,12 +1738,13 @@ class MainActivity : AppCompatActivity() {
                 val seen = det.detect(bmp)
                 val now = SystemClock.uptimeMillis()
                 // FCW na mesma thread, mesmo quadro, mesma inferência (o FcwLogic é só conta)
-                adas?.onDetections(seen, vw, vh, egoSpeed(), now)
+                if (!rearFrame) adas?.onDetections(seen, vw, vh, egoSpeed(), now)
                 if (now - detSecStart > 1000) { detFps = detCount; detCount = 0; detSecStart = now }
                 detCount++
                 if (roadMode) runOnUiThread {
                     b.roadView.message = null
                     b.roadView.fps = detFps
+                    b.roadView.rearView = rearFrame
                     b.roadView.update(seen)
                 }
             } catch (e: Throwable) {

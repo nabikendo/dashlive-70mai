@@ -548,7 +548,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val now = android.os.SystemClock.uptimeMillis()
         var need = 0
         for (o in objs) {
-            if (o.kind == Kind.PERSON || o.kind == Kind.BICYCLE || o.z > 40f || o.x < 0.75f * LANE_W) continue
+            if (o.kind == Kind.PERSON || o.kind == Kind.BICYCLE || o.z > 40f || o.z < 0f || o.x < 0.75f * LANE_W) continue
             need = max(need, ((o.x - LANE_W / 2f) / LANE_W).toInt() + 1)
         }
         if (need > 0) { rightSeenAt = now; if (need > egoLaneTarget) egoLaneTarget = need }
@@ -1210,7 +1210,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         shift += ((if (dir != 0f) 1f else 0f) - shift) * min(1f, dt * 5f)
 
         // faixa azul até o veículo da sua faixa (ou longe, se estiver livre ou trocando de faixa)
-        val lead = objs.filter { abs(it.x) < 1.6f && it.kind != Kind.PERSON }.minByOrNull { it.z }
+        // só o que está à frente (na câmera de ré os objetos têm z negativo: não contam como "lead")
+        val lead = objs.filter { abs(it.x) < 1.6f && it.kind != Kind.PERSON && it.z > 0f }.minByOrNull { it.z }
         // começa 0,3 m à frente do seu carro e para 1 m antes da traseira do da frente
         val z0 = -EGO_L / 2f - 0.3f
         val target = if (dir != 0f) 45f else lead?.let { z0 - (-(DASHCAM + it.z) + EGO_L / 2f) - 1f } ?: 60f
