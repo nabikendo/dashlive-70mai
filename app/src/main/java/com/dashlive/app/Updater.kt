@@ -149,12 +149,15 @@ object Updater {
         fun parts(s: String) = s.trim().removePrefix("v").removePrefix("V")
             .split('.', '-', '+').map { it.toIntOrNull() ?: 0 }
         val a = parts(tag)
-        val b = parts(current)
+        // Uma estável com a mesma versão-base sucede sua candidata a lançamento.
+        val installedRc = current.substringBefore('+').contains("-rc.")
+        val stableAfterRc = installedRc && '-' !in tag
+        val b = parts(if (stableAfterRc) current.substringBefore("-rc.") else current)
         for (i in 0 until maxOf(a.size, b.size)) {
             val x = a.getOrElse(i) { 0 }
             val y = b.getOrElse(i) { 0 }
             if (x != y) return x > y
         }
-        return false
+        return stableAfterRc
     }
 }

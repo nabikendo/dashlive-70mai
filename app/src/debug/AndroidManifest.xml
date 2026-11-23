@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Só no build de teste: medição do modelo de faixa (LDW adiado) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="com.dashlive.app.LaneBenchActivity" android:exported="true" />
+    </application>
+</manifest>

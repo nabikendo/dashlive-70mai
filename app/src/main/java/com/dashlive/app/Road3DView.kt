@@ -185,7 +185,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         skyNight = Skybox.Builder().color(SKY[0], SKY[1], SKY[2], 1f).build(e)
         skyDay = Skybox.Builder().color(SKY_DAY[0], SKY_DAY[1], SKY_DAY[2], 1f).build(e)
         iblNight = IndirectLight.Builder().irradiance(1, floatArrayOf(0.30f, 0.36f, 0.50f)).intensity(0.55f).build(e)
-        iblDay = IndirectLight.Builder().irradiance(1, floatArrayOf(0.62f, 0.70f, 0.85f)).intensity(1.3f).build(e)
+        iblDay = IndirectLight.Builder().irradiance(1, floatArrayOf(0.62f, 0.70f, 0.85f)).intensity(0.85f).build(e)
         sun = newEntity()
         LightManager.Builder(LightManager.Type.DIRECTIONAL).color(0.62f, 0.72f, 1f).intensity(0.35f)
             .direction(0.35f, -0.8f, 0.45f).castShadows(false).build(e, sun)
@@ -428,18 +428,20 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val lm = e.lightManager
         val si = lm.getInstance(sun)
         if (d) {
-            lm.setColor(si, 1f, 0.96f, 0.9f); lm.setIntensity(si, 3.2f); lm.setDirection(si, -0.45f, -0.75f, -0.5f)
+            // sol mais fraco que antes (3,2 deixava tudo branco no tablet; 22/11/2026)
+            lm.setColor(si, 1f, 0.96f, 0.9f); lm.setIntensity(si, 1.9f); lm.setDirection(si, -0.45f, -0.75f, -0.5f)
         } else {
             lm.setColor(si, 0.62f, 0.72f, 1f); lm.setIntensity(si, 0.35f); lm.setDirection(si, 0.35f, -0.8f, 0.45f)
         }
         view.fogOptions = View.FogOptions().apply {
             enabled = true
-            distance = if (d) 60f else 35f
-            density = if (d) 0.006f else 0.018f
-            maximumOpacity = if (d) 0.85f else 1f
+            // de dia: neblina leve e azulada só no fundo (antes cobria a cena de branco)
+            distance = if (d) 90f else 35f
+            density = if (d) 0.004f else 0.018f
+            maximumOpacity = if (d) 0.55f else 1f
             height = 0f
             heightFalloff = 0.06f
-            color = if (d) floatArrayOf(0.72f, 0.80f, 0.90f) else floatArrayOf(SKY[0] * 1.6f, SKY[1] * 1.6f, SKY[2] * 1.6f)
+            color = if (d) floatArrayOf(0.42f, 0.55f, 0.72f) else floatArrayOf(SKY[0] * 1.6f, SKY[1] * 1.6f, SKY[2] * 1.6f)
         }
         view.bloomOptions = View.BloomOptions().apply {
             enabled = true
@@ -449,12 +451,13 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             threshold = true
         }
         // as cores das malhas são de noite; de dia multiplica: grama verde, asfalto cinza, linhas brancas
-        groundMi?.setParameter("baseColorFactor", if (d) 4.5f else 1f, if (d) 6f else 1f, if (d) 3.2f else 1f, 1f)
-        val r = if (d) 2.6f else 1f
+        // asfalto mais escuro que antes para as faixas brancas e os carros se destacarem
+        groundMi?.setParameter("baseColorFactor", if (d) 3.2f else 1f, if (d) 4.6f else 1f, if (d) 2.4f else 1f, 1f)
+        val r = if (d) 1.5f else 1f
         roadMi?.setParameter("baseColorFactor", r, r, r, 1f)
         val w = if (d) 0.95f else 0.55f
         lineMi?.setParameter("baseColorFactor", w, w, w, 1f)
-        val p = if (d) 6f else 1f
+        val p = if (d) 4f else 1f
         poleMi?.setParameter("baseColorFactor", p, p, p, 1f)
         if (d) lampHeadMi?.setParameter("baseColorFactor", 0.6f, 0.6f, 0.62f, 1f)
         else lampHeadMi?.setParameter("baseColorFactor", 6f, 3.6f, 1.6f, 1f)
@@ -525,8 +528,33 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         else floatArrayOf(-la * LANE_W / 2f, la * LANE_W / 2f, la.toFloat(), 0f)
     }
 
-    /** Centro da faixa do carro (a da direita no sentido dele) em relação ao eixo da rua. */
-    private fun egoOffset(c: OsmMap.Corridor, s: Float) = edges(c, s)[1] - LANE_W / 2f
+    /**
+     * Faixas entre o seu carro e a da direita (animado). Começa em 0 (faixa da direita) e sobe quando
+     * a câmera vê veículos à direita do seu carro — se eles estão lá, há faixa lá ([updateEgoLane]).
+     */
+    private var egoLaneShift = 0f
+    private var egoLaneTarget = 0
+    private var rightSeenAt = 0L
+
+    /** Centro da faixa do carro (a da direita no sentido dele, menos [egoLaneShift]) em relação ao eixo da rua. */
+    private fun egoOffset(c: OsmMap.Corridor, s: Float): Float {
+        val e = edges(c, s)
+        val shift = egoLaneShift.coerceIn(0f, (e[2] - 1f).coerceAtLeast(0f))
+        return e[1] - LANE_W / 2f - shift * LANE_W
+    }
+
+    /** Veículo visto a mais de ~3/4 de faixa à direita (até 40 m) = há faixa à direita do seu carro. */
+    private fun updateEgoLane(objs: List<RoadView.Obj>) {
+        val now = android.os.SystemClock.uptimeMillis()
+        var need = 0
+        for (o in objs) {
+            if (o.kind == Kind.PERSON || o.kind == Kind.BICYCLE || o.z > 40f || o.x < 0.75f * LANE_W) continue
+            need = max(need, ((o.x - LANE_W / 2f) / LANE_W).toInt() + 1)
+        }
+        if (need > 0) { rightSeenAt = now; if (need > egoLaneTarget) egoLaneTarget = need }
+        else if (now - rightSeenAt > 15_000) egoLaneTarget = 0
+        egoLaneShift += (egoLaneTarget - egoLaneShift) * min(1f, frameDt * 0.8f)
+    }
 
     /** Ponto do trecho no referencial da malha: x, z e a normal para a direita (nx, nz). */
     private fun sample(c: OsmMap.Corridor, s: Float, out: FloatArray) {
@@ -562,6 +590,51 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         out[1] = -rootS * (qx - rootPx) + rootC * (qz - rootPz)
         out[2] = rootC * p[2] + rootS * p[3]
         out[3] = -rootS * p[2] + rootC * p[3]
+    }
+
+    private val spotP = FloatArray(4)
+
+    /**
+     * Onde pôr na tela um objeto visto a [d] m à frente do centro do seu carro e [lat] m para o lado
+     * (direita +). Com a rua do mapa: segue a curva e, com [snap], fica dentro do asfalto, puxado
+     * para o centro da faixa mais perto (a câmera grande-angular exagera o lado e o seu carro é
+     * suposto na faixa da direita; sem isso carros vistos "à direita" caíam fora da pista).
+     * Sem [snap] (pessoas) pode ficar na calçada, até 4 m fora da borda.
+     * Sem mapa: estrada genérica de 3 faixas com o seu carro na do meio.
+     * Saída: x, z (centro) e o giro da rua naquele ponto.
+     */
+    private fun roadSpot(d: Float, lat: Float, snap: Boolean, out: FloatArray) {
+        val c = cor
+        if (c == null) {
+            out[0] = if (snap) {
+                val lane = Math.round(lat / LANE).coerceIn(-1, 1) * LANE
+                (lane + (lat - lane) * 0.3f).coerceIn(-ROAD_HALF + 1f, ROAD_HALF - 1f)
+            } else lat.coerceIn(-ROAD_HALF - 4f, ROAD_HALF + 4f)
+            out[1] = -d; out[2] = 0f
+            return
+        }
+        val s = carS + d
+        sample(c, s, spotP)
+        val e = edges(c, s)
+        var o = egoOffset(c, s) + lat // em relação ao eixo da rua
+        val n = Math.round((e[1] - e[0]) / LANE_W).coerceAtLeast(1)
+        if (snap && n == 1) {
+            // rua de uma faixa só: quem está "ao lado" está estacionado ou saindo — fica na beira,
+            // meio na calçada (antes empilhava todos os veículos na única faixa)
+            o = o.coerceIn(e[0] - 1.0f, e[1] + 1.0f)
+        } else if (snap) {
+            val k = Math.round((o - e[0]) / LANE_W - 0.5f).coerceIn(0, n - 1)
+            val center = e[0] + (k + 0.5f) * LANE_W
+            o = center + (o - center) * 0.3f
+        } else {
+            o = o.coerceIn(e[0] - 4f, e[1] + 4f)
+        }
+        val qx = spotP[0] + spotP[2] * o; val qz = spotP[1] + spotP[3] * o
+        out[0] = rootC * (qx - rootPx) + rootS * (qz - rootPz)
+        out[1] = -rootS * (qx - rootPx) + rootC * (qz - rootPz)
+        val nx = rootC * spotP[2] + rootS * spotP[3]
+        val nz = -rootS * spotP[2] + rootC * spotP[3]
+        out[2] = kotlin.math.atan2(-nz, nx)
     }
 
     /** A cada quadro: encaixa o GPS, anda com a velocidade e move a malha para o carro ficar no lugar. */
@@ -1112,7 +1185,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val low = (!obd && !day) || src?.lowBeam == true || high
         for (i in 0..1) {
             val li = lm.getInstance(headlights[i])
-            lm.setIntensity(li, if (high) HEAD_HIGH else if (low) HEAD_LOW else HEAD_DRL)
+            // de dia o farol quase não aparece (antes fazia uma mancha branca no asfalto claro)
+            lm.setIntensity(li, (if (high) HEAD_HIGH else if (low) HEAD_LOW else HEAD_DRL) * (if (day) 0.2f else 1f))
             lm.setFalloff(li, if (high) 110f else 55f)
             lm.setDirection(li, (if (i == 0) -0.03f else 0.03f), if (high) -0.035f else -0.075f, -1f)
         }
@@ -1155,6 +1229,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     }
 
     private fun placeTraffic(objs: List<RoadView.Obj>) {
+        if (cor != null) updateEgoLane(objs)
         val seen = HashSet<Int>()
         // veículos: cada objeto fica com a mesma cópia enquanto existir
         val pools = carPools + listOfNotNull(truckPool)
@@ -1170,27 +1245,38 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
                     val inst = pool.instances[slot] ?: continue
                     if (!pool.inScene[slot]) { scene.addEntities(inst.entities); pool.inScene[slot] = true }
                     val l = if (o.kind == Kind.BUS) 11f else pool.l
-                    val rear = -(DASHCAM + o.z) + EGO_L / 2f
+                    // distância da traseira do objeto até o centro do seu carro
+                    val dRear = DASHCAM + o.z - EGO_L / 2f
                     // pisca de um lado só: o carro vai se deslocando e girando para lá (anima ~1 s)
                     val side = if (o.blinkL && !o.blinkR) -1f else if (o.blinkR && !o.blinkL) 1f else 0f
                     if (side != 0f) driftSide[o.id] = side
                     val dr = (drift[o.id] ?: 0f).let { it + ((if (side != 0f) 1f else 0f) - it) * min(1f, frameDt * 1.5f) }
                     drift[o.id] = dr
                     val ds = driftSide[o.id] ?: 0f
-                    val x = o.x + ds * 0.9f * dr
-                    place(inst, pool.box, x, rear - l / 2f, pool.w, pool.h, l, -ds * 0.18f * dr)
-                    setT(pool.tail[slot], x, 0f, rear + 0.03f)
+                    // na faixa da rua (segue a curva do mapa), depois o deslocamento do pisca
+                    roadSpot(dRear + l / 2f, o.x, true, spot)
+                    val yaw = spot[2]
+                    val sy = sin(yaw); val cy = cos(yaw)
+                    val dd = ds * 0.9f * dr
+                    val x = spot[0] + cy * dd
+                    val z = spot[1] - sy * dd
+                    place(inst, pool.box, x, z, pool.w, pool.h, l, yaw - ds * 0.18f * dr)
+                    // lanternas na traseira (centro + metade do comprimento para trás)
+                    val rx = x + sy * l / 2f; val rz = z + cy * l / 2f
+                    setT(pool.tail[slot], rx, 0f, rz + 0.03f)
                     val lit = RoadView.blinkOn()
-                    if (o.blinkL && lit) setT(pool.blink[slot][0], x, 0f, rear + 0.05f) else hide(pool.blink[slot][0])
-                    if (o.blinkR && lit) setT(pool.blink[slot][1], x, 0f, rear + 0.05f) else hide(pool.blink[slot][1])
+                    if (o.blinkL && lit) setT(pool.blink[slot][0], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][0])
+                    if (o.blinkR && lit) setT(pool.blink[slot][1], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][1])
                 }
                 Kind.PERSON -> {
                     val ent = take(personPool, personUsed, o.id) ?: continue
-                    setT(ent, o.x, 0f, -(DASHCAM + o.z) + EGO_L / 2f)
+                    roadSpot(DASHCAM + o.z - EGO_L / 2f, o.x, false, spot)
+                    setT(ent, spot[0], 0f, spot[1])
                 }
                 Kind.MOTORCYCLE, Kind.BICYCLE -> {
                     val ent = take(bikePool, bikeUsed, o.id) ?: continue
-                    setT(ent, o.x, 0f, -(DASHCAM + o.z) + EGO_L / 2f - 0.9f)
+                    roadSpot(DASHCAM + o.z - EGO_L / 2f + 0.9f, o.x, true, spot)
+                    setT(ent, spot[0], 0f, spot[1])
                 }
             }
         }
@@ -1202,6 +1288,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             }
         }
     }
+
+    private val spot = FloatArray(3)
 
     private fun take(pool: IntArray, used: HashMap<Int, Int>, id: Int): Int? {
         used[id]?.let { return pool[it] }
@@ -1221,7 +1309,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     companion object {
         private fun rgba(r: Float, g: Float, b: Float, a: Float = 1f) = floatArrayOf(r, g, b, a)
         private val SKY = floatArrayOf(0.010f, 0.016f, 0.034f)
-        private val SKY_DAY = floatArrayOf(0.36f, 0.55f, 0.85f)
+        private val SKY_DAY = floatArrayOf(0.22f, 0.38f, 0.66f)
         private const val FOV = 38.0
         private const val CAM_H = 6.0
         private const val CAM_BACK = 16.5

@@ -22,6 +22,8 @@ import kotlin.math.hypot
 object OsmClient {
     private val SERVERS = listOf(
         "https://overpass.kumi.systems/api/interpreter",
+        // 23/11/2026: com os outros fora do ar (502/tempo esgotado), este respondeu em ~1 s
+        "https://overpass.openstreetmap.fr/api/interpreter",
         "https://overpass-api.de/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
@@ -39,34 +41,64 @@ object OsmClient {
                 runCatching { return OsmMap.parse(f.readText(), c.first, c.second) to false }
             }
         }
-        val net = Updater.internetNetwork(cm)
-        // os servidores públicos às vezes respondem 502 ou ficam lentos: tenta um de cada vez, com
-        // pouca espera, começando pelo último que funcionou
-        val order = SERVERS.sortedBy { if (it == lastGood) 0 else 1 }
-        if (net != null) for (server in order) {
-            try {
-                val conn = net.openConnection(URL(server)) as HttpURLConnection
-                // a resposta é pequena (~130 KB), mas servidor cheio demora (medido: até ~25 s)
-                conn.connectTimeout = 8_000
-                conn.readTimeout = 30_000
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.setRequestProperty("User-Agent", "DashLive-app")
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                val body = "data=" + URLEncoder.encode(OsmMap.query(lat, lon, RADIUS), "UTF-8")
-                conn.outputStream.use { it.write(body.toByteArray()) }
-                if (conn.responseCode != 200) throw IOException("Overpass respondeu ${conn.responseCode}")
-                val json = conn.inputStream.bufferedReader().use { it.readText() }
-                val map = OsmMap.parse(json, lat, lon)
-                lastGood = server
-                save(ctx, lat, lon, json)
-                return map to true
-            } catch (e: Exception) {
-                Log.w("DashLive", "mapa ($server): ${e.message}")
+        // mapa offline da cidade (botão "Baixar mapa"): não precisa de internet
+        runCatching { OsmPacks.find(ctx, lat, lon) }.getOrNull()?.let { pack ->
+            val m = pack.extract(lat, lon, RADIUS)
+            // pacote incompleto pode ter buraco aqui: aí tenta a internet
+            if (m.ways.isNotEmpty()) {
+                Log.i("DashLive", "mapa do pacote ${pack.info.name}: ${m.ways.size} ruas")
+                return m to false
             }
+        }
+        val net = Updater.internetNetwork(cm)
+        if (net != null) {
+            runCatching { overpass(net, OsmMap.query(lat, lon, RADIUS), 30_000, tries = 1) }
+                .onSuccess { json ->
+                    val map = OsmMap.parse(json, lat, lon)
+                    save(ctx, lat, lon, json)
+                    return map to true
+                }
         }
         val cached = nearestCache(ctx, lat, lon) ?: throw IOException("sem internet e sem mapa guardado aqui")
         return OsmMap.parse(cached.second.readText(), cached.first.first, cached.first.second) to false
+    }
+
+    /**
+     * Pergunta ao Overpass. Os servidores públicos às vezes respondem 502 ou ficam lentos: tenta um
+     * de cada vez, com pouca espera, começando pelo último que funcionou; [tries] voltas na lista
+     * (com pausa crescente entre elas). [readTimeoutMs]: resposta pequena (~130 KB) mas servidor
+     * cheio demora (medido: até ~25 s).
+     */
+    fun overpass(net: android.net.Network, query: String, readTimeoutMs: Int, tries: Int = 1): String {
+        var last: Exception? = null
+        for (round in 0 until tries) {
+            if (round > 0) Thread.sleep(5_000L * round)
+            val order = SERVERS.sortedBy { if (it == lastGood) 0 else 1 }
+            for (server in order) {
+                try {
+                    val conn = net.openConnection(URL(server)) as HttpURLConnection
+                    conn.connectTimeout = 8_000
+                    // servidor fora do ar não deve prender o download: o 1º byte tem que vir logo
+                    conn.readTimeout = if (server == lastGood) readTimeoutMs else minOf(readTimeoutMs, 45_000)
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+                    conn.setRequestProperty("User-Agent", "DashLive-app")
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    val body = "data=" + URLEncoder.encode(query, "UTF-8")
+                    conn.outputStream.use { it.write(body.toByteArray()) }
+                    if (conn.responseCode != 200) throw IOException("Overpass respondeu ${conn.responseCode}")
+                    val json = conn.inputStream.bufferedReader().use { it.readText() }
+                    // resposta 200 com erro de tempo do servidor vem com "remark"
+                    if (json.contains("\"remark\"") && json.contains("runtime error")) throw IOException("Overpass: tempo esgotado")
+                    lastGood = server
+                    return json
+                } catch (e: Exception) {
+                    last = e
+                    Log.w("DashLive", "mapa ($server): ${e.message}")
+                }
+            }
+        }
+        throw last ?: IOException("sem servidor de mapa")
     }
 
     private fun dir(ctx: Context) = File(ctx.cacheDir, "osm").apply { mkdirs() }

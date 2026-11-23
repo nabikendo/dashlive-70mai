@@ -252,6 +252,27 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
                 ");out body geom;"
         }
 
+        /** Que tipo de ponto é um nó do OSM (lombada, semáforo, poste, faixa de pedestre) ou null. */
+        fun pointKind(tags: Map<String, String>): PointKind? = when {
+            tags["traffic_calming"] != null && tags["traffic_calming"] != "no" &&
+                tags["traffic_calming"] != "island" && tags["traffic_calming"] != "choker" -> PointKind.BUMP
+            tags["highway"] == "traffic_signals" -> PointKind.SIGNAL
+            tags["highway"] == "street_lamp" -> PointKind.LAMP
+            tags["highway"] == "crossing" || tags["crossing"] != null -> PointKind.CROSSING
+            else -> null
+        }
+
+        /** Mesma consulta de [query], mas para um retângulo qualquer (pacote offline, em pedaços). */
+        fun queryBox(s: Double, w: Double, n: Double, e: Double, timeout: Int = 90): String {
+            val bb = "%.6f,%.6f,%.6f,%.6f".format(java.util.Locale.US, s, w, n, e)
+            val types = (DRIVABLE - "service").joinToString("|")
+            return "[out:json][timeout:$timeout][bbox:$bb];(" +
+                "way[highway~\"^($types)$\"];" +
+                "node[highway~\"^(crossing|traffic_signals|street_lamp)$\"];" +
+                "node[traffic_calming];" +
+                ");out body geom;"
+        }
+
         /** Lê a resposta do Overpass. */
         fun parse(json: String, refLat: Double, refLon: Double): OsmMap {
             val root = JSONObject(json)
@@ -279,14 +300,7 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
                     "node" -> {
                         val x = ((e.getDouble("lon") - refLon) * kx).toFloat()
                         val y = ((e.getDouble("lat") - refLat) * M_PER_DEG_LAT).toFloat()
-                        val kind = when {
-                            tags["traffic_calming"] != null && tags["traffic_calming"] != "no" &&
-                                tags["traffic_calming"] != "island" && tags["traffic_calming"] != "choker" -> PointKind.BUMP
-                            tags["highway"] == "traffic_signals" -> PointKind.SIGNAL
-                            tags["highway"] == "street_lamp" -> PointKind.LAMP
-                            tags["highway"] == "crossing" || tags["crossing"] != null -> PointKind.CROSSING
-                            else -> null
-                        } ?: continue
+                        val kind = pointKind(tags) ?: continue
                         pts += Point(x, y, kind)
                     }
                 }

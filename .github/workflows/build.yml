@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, "preview/v*-rc.*"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -25,8 +25,10 @@ jobs:
       - name: Versão
         id: ver
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/preview/v* ]]; then
+            tag="${GITHUB_REF_NAME#preview/}"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "name=${tag#v}" >> "$GITHUB_OUTPUT"
           else
             echo "name=0.0.0-dev" >> "$GITHUB_OUTPUT"
           fi
@@ -42,7 +44,7 @@ jobs:
             echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/dashlive.jks"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/dashlive.jks" >> "$GITHUB_ENV"
             echo "KEYSTORE_PASSWORD=$KS_PW" >> "$GITHUB_ENV"
-          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          elif [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/preview/v* ]]; then
             echo "::error::Segredos ANDROID_KEYSTORE_B64 e ANDROID_KEYSTORE_PASSWORD não configurados; a atualização dentro do app não funcionaria."
             exit 1
           fi
@@ -62,7 +64,7 @@ jobs:
             rm -f "$F"
           done
           if [ ! -f "$F" ]; then
-            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/preview/v* ]]; then
               echo "::error::Não foi possível baixar o modelo de detecção."
               exit 1
             fi
@@ -72,15 +74,20 @@ jobs:
           fi
 
       - name: Build
+        env:
+          APP_VERSION_NAME: ${{ steps.ver.outputs.name }}
+          APP_VERSION_CODE: ${{ steps.ver.outputs.code }}
         run: >
-          gradle :app:assembleRelease --no-daemon
-          -PappVersionName=${{ steps.ver.outputs.name }}
-          -PappVersionCode=${{ steps.ver.outputs.code }}
+          gradle :app:testDebugUnitTest :app:assembleRelease --no-daemon
+          "-PappVersionName=$APP_VERSION_NAME"
+          "-PappVersionCode=$APP_VERSION_CODE"
 
       - name: Nomear APK
+        env:
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/DashLive-${GITHUB_REF_NAME//\//-}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/DashLive-${RELEASE_TAG:-dev}.apk"
           ls -la dist
 
       - uses: actions/upload-artifact@v4
@@ -89,12 +96,16 @@ jobs:
           path: dist/*.apk
 
       - name: Publicar Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.ver.outputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
         run: |
           # Se a Release já foi criada pela página do GitHub, só anexa o APK
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then
+            gh release create "$RELEASE_TAG" dist/*.apk --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "DashLive $RELEASE_TAG (teste)" --notes-file RELEASE_NOTES.md
+          elif gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
           else
             gh release create "$GITHUB_REF_NAME" dist/*.apk \

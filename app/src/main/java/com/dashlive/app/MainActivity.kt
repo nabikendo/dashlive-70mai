@@ -24,6 +24,10 @@ import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
@@ -38,6 +42,12 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import com.dashlive.app.adas.AdasConfig
+import com.dashlive.app.adas.AdasEngine
+import com.dashlive.app.adas.AdasState
+import com.dashlive.app.adas.LanePoly
+import com.dashlive.app.adas.LaneSides
+import com.dashlive.app.adas.Sensitivity
 import com.dashlive.app.databinding.ActivityMainBinding
 import java.io.File
 
@@ -93,6 +103,16 @@ class MainActivity : AppCompatActivity() {
     private var roadMode = false
     @Volatile private var roadDetector: RoadDetector? = null
     private val detectExec by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
+
+    // ADAS (só FCW por enquanto): usa as detecções do RoadDetector na própria detectExec.
+    // Criados no onCreate (nunca em inicializador de campo: prefs/contexto ainda não existem).
+    private lateinit var adasConfig: AdasConfig
+    private var adas: AdasEngine? = null
+    private val adasOn: Boolean get() = ::adasConfig.isInitialized && adasConfig.anyOn
+    /** Velocidade do seu carro para o ADAS (OBD tem prioridade; GPS quando o OBD não está fresco). */
+    @Volatile private var egoKmh: Float? = null
+    @Volatile private var egoAt = 0L
+    private fun egoSpeed(): Float? = egoKmh?.takeIf { SystemClock.elapsedRealtime() - egoAt < 3000 }
     private val detecting = java.util.concurrent.atomic.AtomicBoolean(false)
     private var detCount = 0
     private var detFps = 0
@@ -100,24 +120,40 @@ class MainActivity : AppCompatActivity() {
     private var dumpNextFrame = false
     private val detectTick = object : Runnable {
         override fun run() {
-            if (!roadMode) return
-            if (SystemClock.elapsedRealtime() - dayCheckedAt > 60_000) updateDay()
-            b.roadView.mapStatus = b.road3d.streetInfo ?: mapState
-            // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
-            if (roadDemo && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
-            // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
-            if (gpsOn && !obdFresh && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+            // roda com a Estrada aberta OU com o ADAS ligado (aí só detecção + som, sem desenho)
+            if (!roadMode && !adasOn) return
+            if (roadMode) {
+                if (SystemClock.elapsedRealtime() - dayCheckedAt > 60_000) updateDay()
+                b.roadView.mapStatus = b.road3d.streetInfo ?: mapState
+                // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
+                if (roadDemo && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
+                // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
+                if (gpsOn && !obdFresh && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+            }
             if (roadDemo) {
                 val t = SystemClock.uptimeMillis() / 1000f
-                b.roadView.message = null
-                b.roadView.update(demoScene(t))
-                if (b.roadView.speedKmh == null) b.roadView.speedKmh = 62f
-                // setas e faróis de mentira: esquerda 4 s, direita 4 s, nenhuma 4 s; farol alto a cada 12 s
-                val c = t % 12f
-                b.roadView.turnLeft = c < 4f
-                b.roadView.turnRight = c >= 4f && c < 8f
-                b.roadView.highBeam = t % 24f >= 12f
-                b.roadView.lowBeam = !b.roadView.highBeam
+                val scene = demoScene(t)
+                if (roadMode) {
+                    b.roadView.message = null
+                    b.roadView.update(scene)
+                    if (b.roadView.speedKmh == null) b.roadView.speedKmh = 62f
+                    // setas e faróis de mentira: esquerda 4 s, direita 4 s, nenhuma 4 s; farol alto a cada 12 s
+                    val c = t % 12f
+                    b.roadView.turnLeft = c < 4f
+                    b.roadView.turnRight = c >= 4f && c < 8f
+                    b.roadView.highBeam = t % 24f >= 12f
+                    b.roadView.lowBeam = !b.roadView.highBeam
+                }
+                // demo do ADAS: mesma cena de mentira, a 62 km/h se não houver velocidade real
+                if (adasOn) {
+                    val ego = egoSpeed() ?: 62f
+                    val lanes = demoLanes(t)
+                    detectExec.execute {
+                        val now = SystemClock.uptimeMillis()
+                        adas?.onDetections(scene, 640, 360, ego, now)
+                        adas?.onDemoLanes(lanes, ego, now)
+                    }
+                }
             } else {
                 grabAndDetect()
             }
@@ -143,9 +179,11 @@ class MainActivity : AppCompatActivity() {
     private var rearLens: Boolean
         get() = prefs.getBoolean("rearLens", false)
         set(v) = prefs.edit().putBoolean("rearLens", v).apply()
-    private var dual: Boolean
-        get() = prefs.getBoolean("dual", false)
-        set(v) = prefs.edit().putBoolean("dual", v).apply()
+    /**
+     * Segunda câmera ao lado: DESLIGADA de vez (23/11/2026). A A200 manda um vídeo por vez — com duas
+     * sessões, uma fica sem imagem —, então a opção saiu dos Ajustes. O código do 2º vídeo fica parado.
+     */
+    private val dual = false
     private var forceTcp: Boolean
         get() = prefs.getBoolean("tcp", false)
         set(v) = prefs.edit().putBoolean("tcp", v).apply()
@@ -168,6 +206,10 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
         hideSystemBars()
+        phone = resources.configuration.smallestScreenWidthDp < 600 ||
+            (BuildConfig.DEBUG && intent.getBooleanExtra("phoneUi", false))
+        applyCompactLayout()
+        for (i in 0 until b.dock.childCount) (b.dock.getChildAt(i) as? LinearLayout)?.let { dockFeel(it) }
 
         b.valVersion.text = BuildConfig.VERSION_NAME
         b.btnChannel.setOnClickListener { pickCamera() }
@@ -235,9 +277,20 @@ class MainActivity : AppCompatActivity() {
             toast("A Estrada 3D não abriu neste aparelho ($msg). Usando a cena desenhada.")
         }
         b.btnDiag.setOnClickListener { runDiagnostics() }
-        b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
+        b.btnUpdate.setOnClickListener {
+            // celular: não há o cartão da direita; mostra a versão nova num diálogo
+            val rel = pendingRelease
+            if (phone && rel != null) {
+                AlertDialog.Builder(this).setTitle(b.updateTitle.text)
+                    .setMessage(rel.notes.ifBlank { "Melhorias e correções." })
+                    .setPositiveButton("Baixar e instalar") { _, _ -> toast("Baixando a atualização…"); onUpdateButton() }
+                    .setNegativeButton("Depois", null).show()
+            } else checkForUpdate(manual = true)
+        }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
         b.carCard.setOnClickListener { showObdDialog() }
+        adasConfig = AdasConfig(prefs)
+        adas = AdasEngine(this, adasConfig).also { e -> e.listener = { r -> b.adasOverlay.show(r) } }
         if (obdAddr.isNotBlank()) showCarStatus(obdName, false)
         refreshInfo()
         handler.post { showLastCrash() }
@@ -246,6 +299,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         b.road3d.destroy()
+        adas?.close()
+        adas = null
         roadDetector?.close()
         roadDetector = null
         detectExec.shutdown()
@@ -253,8 +308,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (roadMode && (!rearLens || roadDemo)) handler.post(detectTick)
-        if (roadMode) startSpeed()
+        restartDetect()
+        if (roadMode || adasOn) startSpeed()
         updateRoad3d()
         startObd()
         bindToCameraWifi()
@@ -319,7 +374,7 @@ class MainActivity : AppCompatActivity() {
      * tráfego por outra rede e o vídeo nunca abre.
      */
     private fun bindToCameraWifi() {
-        setState(State.CONNECTING, "Procurando a câmera", "Conecte o tablet ao Wi-Fi 70mai Dash Cam A200-…")
+        setState(State.CONNECTING, "Procurando a câmera", "Conecte o aparelho ao Wi-Fi 70mai Dash Cam A200-…")
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -345,7 +400,7 @@ class MainActivity : AppCompatActivity() {
                         releasePlayer()
                         setState(
                             State.ERROR, "Câmera desconectada",
-                            "Conecte o tablet ao Wi-Fi 70mai Dash Cam A200-…"
+                            "Conecte o aparelho ao Wi-Fi 70mai Dash Cam A200-…"
                         )
                     }
                 }
@@ -379,7 +434,7 @@ class MainActivity : AppCompatActivity() {
         releasePlayer()
         setState(
             State.ERROR, "Fora do Wi-Fi da câmera",
-            "O tablet está em outra rede Wi-Fi (o Android prefere a que tem internet). " +
+            "O aparelho está em outra rede Wi-Fi (o Android prefere a que tem internet). " +
                 "Toque aqui para escolher o Wi-Fi 70mai Dash Cam A200-…"
         )
         // Toque no aviso abre o painel de Wi-Fi do Android por cima do app
@@ -453,6 +508,7 @@ class MainActivity : AppCompatActivity() {
                 refreshInfo()
                 startPlayback()
                 if (roadMode) { roadMode = false; toggleRoad() } // reaplica a Estrada para a lente nova
+                else restartDetect() // ADAS: só com a lente frontal
             }
             .setNegativeButton("Fechar", null)
             .show()
@@ -528,7 +584,7 @@ class MainActivity : AppCompatActivity() {
         val surface = nativeSurface ?: Surface(st).also { nativeSurface = it }
         val p = NativePlayer(
             surface, streamUrl,
-            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; b.roadView.setVideoSize(w, h); fitVideo() } },
+            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; b.roadView.setVideoSize(w, h); b.adasOverlay.setVideoSize(w, h); fitVideo() } },
             onLive = {
                 runOnUiThread {
                     sawVideo = true
@@ -562,8 +618,6 @@ class MainActivity : AppCompatActivity() {
         while (dualDrops.isNotEmpty() && now - dualDrops.first() > 60_000) dualDrops.removeFirst()
         if (dualDrops.size < 2) return false
         dualDrops.clear()
-        dual = false
-        toast("A câmera envia um vídeo por vez. A segunda câmera foi desligada (dá para religar em Ajustes).")
         startPlayback()
         return true
     }
@@ -685,23 +739,176 @@ class MainActivity : AppCompatActivity() {
         fullscreen = on
         exitFullscreenOnBack.isEnabled = on
         val v = if (on) View.GONE else View.VISIBLE
-        b.sidePanel.visibility = v
+        b.sidePanel.visibility = if (phone) View.GONE else v
         b.dock.visibility = v
-        b.mainLabel.visibility = if (on) View.GONE else View.VISIBLE
+        b.mainLabel.visibility = if (on || phone) View.GONE else View.VISIBLE
         b.btnExitFs.visibility = if (on) View.VISIBLE else View.GONE
         b.roadView.toggleLift = if (on) 72f * resources.displayMetrics.density else 0f
-        val pad = if (on) 0 else (12 * resources.displayMetrics.density).toInt()
+        val pad = if (on) 0 else ((if (phone) 6 else 12) * resources.displayMetrics.density).toInt()
         b.main.setPadding(pad, pad, pad, pad)
         b.videoCard.setBackgroundColor(getColor(R.color.video_bg))
         if (!on) b.videoCard.setBackgroundResource(R.drawable.bg_video)
     }
 
+    // ---------------------------------------------------------------- celular e navegação
+
+    /**
+     * Celular (tela menor que 600 dp, ex.: S24 FE): menos distrações. Só o vídeo/Estrada e uma barra
+     * fina com os ícones essenciais (Câmeras, Reconectar, Tela cheia, Estrada, Ajustes). O painel da
+     * direita some; OBD, diagnóstico, atualização e Android Auto ficam nos Ajustes. No build de teste
+     * dá para ver no tablet: `--ez phoneUi true`.
+     */
+    private var phone = false
+
+    private fun applyCompactLayout() {
+        if (!phone) return
+        val d = resources.displayMetrics.density
+        b.sidePanel.visibility = View.GONE
+        b.mainLabel.visibility = View.GONE
+        (b.dock.layoutParams as LinearLayout.LayoutParams).apply { width = (60 * d).toInt(); marginEnd = (6 * d).toInt() }
+        for (v in listOf(b.btnAuto, b.btnDiag, b.btnUpdate)) v.visibility = View.GONE
+        // só ícones (o nome vai para a descrição de acessibilidade, que já existe)
+        for (i in 0 until b.dock.childCount) {
+            val btn = b.dock.getChildAt(i) as? LinearLayout ?: continue
+            for (k in 0 until btn.childCount) (btn.getChildAt(k) as? TextView)?.visibility = View.GONE
+        }
+        b.clock.textSize = 14f
+        val pad = (6 * d).toInt()
+        b.main.setPadding(pad, pad, pad, pad)
+    }
+
+    /**
+     * Toque nos botões da barra: vibração curta e o botão "afunda" um pouco enquanto pressionado
+     * (resposta imediata, antes de a ação terminar).
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun dockFeel(v: View) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    view.animate().scaleX(0.92f).scaleY(0.92f).setDuration(70).start()
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }
+            false
+        }
+    }
+
+    /** Mensagem de estado em cima da Estrada: pílula pequena embaixo, para não cobrir a cena. */
+    private fun styleOverlay() {
+        val d = resources.displayMetrics.density
+        val lp = b.overlay.layoutParams as android.widget.FrameLayout.LayoutParams
+        if (roadMode) {
+            lp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
+            lp.bottomMargin = (84 * d).toInt()
+            b.overlay.textSize = 13f
+            b.overlay.maxLines = 2
+            b.overlay.setBackgroundResource(R.drawable.bg_pill)
+            b.overlay.setPadding((16 * d).toInt(), (8 * d).toInt(), (16 * d).toInt(), (8 * d).toInt())
+        } else {
+            lp.gravity = android.view.Gravity.CENTER
+            lp.bottomMargin = 0
+            b.overlay.textSize = 18f
+            b.overlay.maxLines = Int.MAX_VALUE
+            b.overlay.background = null
+            b.overlay.setPadding(0, 0, 0, 0)
+        }
+        b.overlay.layoutParams = lp
+    }
+
+    /** "Outros" nos Ajustes: o que no celular sai da tela principal. */
+    private fun addOtherActions(box: LinearLayout, dismiss: () -> Unit) {
+        val d = resources.displayMetrics.density
+        section(box, "Outros")
+        val row = android.widget.GridLayout(this).apply { columnCount = 2 }
+        fun chip(label: String, act: () -> Unit) {
+            row.addView(android.widget.Button(this).apply {
+                text = label; isAllCaps = false
+                setOnClickListener { dismiss(); act() }
+            }, android.widget.GridLayout.LayoutParams().apply {
+                width = 0
+                columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f)
+                setMargins(0, (4 * d).toInt(), (8 * d).toInt(), 0)
+            })
+        }
+        chip("Carro (OBD2)…") { showObdDialog() }
+        chip("Diagnóstico") { runDiagnostics() }
+        chip("Verificar atualização") { checkForUpdate(manual = true) }
+        chip("Android Auto") { openAndroidAuto() }
+        box.addView(row, LinearLayout.LayoutParams(-1, -2))
+    }
+
+    /** Título de seção dos Ajustes. */
+    private fun section(box: LinearLayout, title: String) {
+        val d = resources.displayMetrics.density
+        box.addView(TextView(this).apply {
+            text = title.uppercase()
+            textSize = 13f
+            letterSpacing = 0.08f
+            setTextColor(getColor(R.color.primary))
+            setPadding(0, ((if (box.childCount == 0) 4 else 22) * d).toInt(), 0, (4 * d).toInt())
+        })
+    }
+
     private fun showSettings() {
-        val pad = (20 * resources.displayMetrics.density).toInt()
+        val d = resources.displayMetrics.density
+        val pad = (22 * d).toInt()
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, 0)
+            setPadding(pad, (8 * d).toInt(), pad, (8 * d).toInt())
         }
+        // rola no celular (a lista ficou maior que a tela deitada)
+        val scroll = android.widget.ScrollView(this).apply { addView(box) }
+
+        section(box, "Assistência ao motorista")
+        val fcwBox = CheckBox(this).apply {
+            text = "Aviso de colisão frontal (acima de 20 km/h)"
+            isChecked = adasConfig.fcwOn
+        }
+        val ldwBox = CheckBox(this).apply {
+            text = "Aviso de saída de faixa (acima de 30 km/h)"
+            isChecked = adasConfig.ldwOn
+        }
+        box.addView(fcwBox); box.addView(ldwBox)
+        box.addView(TextView(this).apply {
+            text = "Experimental: só com a câmera frontal. É uma ajuda, não um sistema de segurança."
+            textSize = 13f
+            alpha = 0.7f
+        })
+        val sensGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val sensIds = Sensitivity.values().associateWith { View.generateViewId() }
+        for ((s, id) in sensIds) {
+            sensGroup.addView(RadioButton(this).apply {
+                this.id = id
+                text = when (s) { Sensitivity.LOW -> "Baixa"; Sensitivity.MEDIUM -> "Média"; Sensitivity.HIGH -> "Alta" }
+            })
+        }
+        sensGroup.check(sensIds.getValue(adasConfig.sensitivity))
+        val volLabel = TextView(this).apply { text = "Volume do aviso: ${adasConfig.volume}" }
+        val volBar = SeekBar(this).apply {
+            max = 100
+            progress = adasConfig.volume
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) { volLabel.text = "Volume do aviso: $p" }
+                override fun onStartTrackingTouch(s: SeekBar) {}
+                override fun onStopTrackingTouch(s: SeekBar) {}
+            })
+        }
+        box.addView(TextView(this).apply { text = "Sensibilidade"; setPadding(0, (10 * d).toInt(), 0, 0) })
+        box.addView(sensGroup); box.addView(volLabel); box.addView(volBar)
+
+        section(box, "Mapa da Estrada")
+        box.addView(TextView(this).apply {
+            text = "Guarde o mapa da sua cidade para ter a rua real sem internet (o tablet no carro fica no Wi-Fi da câmera)."
+            textSize = 13f
+            alpha = 0.7f
+        })
+        val mapsBtn = android.widget.Button(this).apply { text = "Mapas offline…"; isAllCaps = false }
+        box.addView(mapsBtn, LinearLayout.LayoutParams(-2, -2).apply { topMargin = (6 * d).toInt() })
+
+        section(box, "Câmera (avançado)")
         val ipField = EditText(this).apply { hint = "IP da câmera (vazio = automático)"; setText(ip) }
         val urlField = EditText(this).apply {
             hint = "URL RTSP personalizada (opcional)"
@@ -711,28 +918,58 @@ class MainActivity : AppCompatActivity() {
             text = "Forçar RTSP por TCP (use se a imagem não abrir)"
             isChecked = forceTcp
         }
-        val dualBox = CheckBox(this).apply {
-            text = "Mostrar uma segunda câmera ao lado (a câmera pode aceitar só uma por vez)"
-            isChecked = dual
-        }
-        box.addView(ipField); box.addView(urlField); box.addView(tcpBox); box.addView(dualBox)
+        box.addView(ipField); box.addView(urlField); box.addView(tcpBox)
 
-        AlertDialog.Builder(this)
+        val applyAdas = {
+            adasConfig.enabled = fcwBox.isChecked || ldwBox.isChecked
+            adasConfig.fcwEnabled = fcwBox.isChecked
+            adasConfig.ldwEnabled = ldwBox.isChecked
+            adasConfig.sensitivity = sensIds.entries.firstOrNull { it.value == sensGroup.checkedRadioButtonId }?.key
+                ?: Sensitivity.MEDIUM
+            adasConfig.volume = volBar.progress
+            if (adasOn) startSpeed() else if (!roadMode) stopSpeed()
+            restartDetect()
+        }
+
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Ajustes")
-            .setView(box)
+            .setView(scroll)
             .setPositiveButton("Salvar") { _, _ ->
-                ip = ipField.text.toString().trim()
-                customUrl = urlField.text.toString().trim()
-                forceTcp = tcpBox.isChecked
-                dual = dualBox.isChecked
-                refreshInfo(); startPlayback()
+                applyAdas()
+                // só reconecta o vídeo se mudou algo da câmera (antes reconectava sempre)
+                val newIp = ipField.text.toString().trim()
+                val newUrl = urlField.text.toString().trim()
+                if (newIp != ip || newUrl != customUrl || tcpBox.isChecked != forceTcp) {
+                    ip = newIp; customUrl = newUrl; forceTcp = tcpBox.isChecked
+                    refreshInfo(); startPlayback()
+                }
             }
-            .setNeutralButton("Padrão") { _, _ ->
-                ip = ""; customUrl = ""; forceTcp = false; dual = false; mainPath = SOURCES[0].second; rearPath = SOURCES[1].second
+            .setNeutralButton("Câmera padrão") { _, _ ->
+                ip = ""; customUrl = ""; forceTcp = false; mainPath = SOURCES[0].second; rearPath = SOURCES[1].second
                 refreshInfo(); startPlayback()
             }
             .setNegativeButton("Cancelar", null)
-            .show()
+            .create()
+        mapsBtn.setOnClickListener { dlg.dismiss(); showOfflineMaps() }
+        addOtherActions(box) { dlg.dismiss() }
+        dlg.show()
+    }
+
+    /** Mapas offline (Ajustes → Mapas offline…). */
+    private fun showOfflineMaps() {
+        OfflineMapsDialog(this, cm, position = {
+            val la = prefs.getFloat("lastLat", Float.NaN); val lo = prefs.getFloat("lastLon", Float.NaN)
+            if (!la.isNaN()) la.toDouble() to lo.toDouble()
+            else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                runCatching {
+                    (lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER))
+                        ?.let { it.latitude to it.longitude }
+                }.getOrNull()
+            } else null
+        }, onChanged = {
+            // a Estrada pede a rua de novo (agora do mapa guardado)
+            mapLat = Double.NaN; mapLon = Double.NaN; mapTriedAt = 0L
+        }).show()
     }
 
     private fun hideSystemBars() {
@@ -777,6 +1014,8 @@ class MainActivity : AppCompatActivity() {
         b.updateProgress.visibility = View.GONE
         b.btnUpdateNowText.text = "Baixar e instalar"
         b.lblUpdate.text = "Atualizar •"
+        // celular: o botão só aparece quando há versão nova
+        if (phone) b.btnUpdate.visibility = View.VISIBLE
     }
 
     private fun onUpdateButton() {
@@ -897,7 +1136,11 @@ class MainActivity : AppCompatActivity() {
     private fun toggleRoad() {
         roadMode = !roadMode
         b.roadView.visibility = if (roadMode) View.VISIBLE else View.GONE
+        b.adasOverlay.visibility = if (roadMode) View.VISIBLE else View.GONE
         b.lblRoad.text = if (roadMode) "Vídeo" else "Estrada"
+        // botão destacado enquanto a Estrada está aberta (sabe-se onde está sem ler o rótulo)
+        b.btnRoad.setBackgroundResource(if (roadMode) R.drawable.bg_rail_active else R.drawable.bg_press)
+        styleOverlay()
         handler.removeCallbacks(detectTick)
         b.roadView.clear()
         fitVideo()
@@ -909,10 +1152,23 @@ class MainActivity : AppCompatActivity() {
                 useNative -> "Procurando veículos…"
                 else -> "A simulação precisa do player nativo"
             }
-            if (!rearLens || roadDemo) handler.post(detectTick)
             startSpeed()
-        } else {
+        } else if (!adasOn) {
             stopSpeed()
+        }
+        restartDetect()
+    }
+
+    /**
+     * Liga/desliga o laço de detecção: roda com a Estrada aberta OU com o ADAS ligado, só com a
+     * lente frontal (a demo roda com qualquer lente). Sem ADAS, limpa o aviso da tela.
+     */
+    private fun restartDetect() {
+        handler.removeCallbacks(detectTick)
+        if ((roadMode || adasOn) && (!rearLens || roadDemo)) handler.post(detectTick)
+        if (!adasOn || (rearLens && !roadDemo)) {
+            b.adasOverlay.show(AdasState.NONE)
+            detectExec.execute { adas?.reset() }
         }
     }
 
@@ -961,6 +1217,7 @@ class MainActivity : AppCompatActivity() {
     /** Estrada ligada no estilo "cena": mostra o 3D por baixo do painel do RoadView. */
     private fun updateRoad3d() {
         val on = road3dOk && roadMode && b.roadView.style == RoadView.Style.SCENE
+        b.adasOverlay.overVideo = b.roadView.style == RoadView.Style.VIDEO
         b.road3d.visibility = if (on) View.VISIBLE else View.GONE
         b.roadView.scene3d = on
         if (on) { updateDay(); b.road3d.start() } else b.road3d.stop()
@@ -1017,6 +1274,21 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    /**
+     * Demo do LDW: faixas de mentira num quadro de 480×270; a cada 10 s o carro vai saindo pela
+     * direita (ponto de fuga para a esquerda = virado para a direita) e volta.
+     */
+    private fun demoLanes(t: Float): LaneSides {
+        val ph = (t % 10f) / 10f
+        val shift = -110f * kotlin.math.sin(Math.PI * ph).toFloat()
+        val xv = 240f - 45f * kotlin.math.cos(Math.PI * ph).toFloat()
+        fun line(x0: Float): LanePoly {
+            val k = (x0 - xv) / (270f - 120f)
+            return LanePoly(0f, k, xv - k * 120f, 150f, 250f, 40)
+        }
+        return LaneSides(480, 270, line(130f + shift), line(350f + shift))
+    }
+
     // ---------------------------------------------------------------- velocidade (GPS do tablet)
 
     private val lm by lazy { getSystemService(LocationManager::class.java) }
@@ -1035,7 +1307,10 @@ class MainActivity : AppCompatActivity() {
                 feedMap(loc.latitude, loc.longitude)
             }
             // com o OBD2 conectado, a velocidade do carro tem prioridade (mais precisa e sem atraso)
-            if (loc.hasSpeed() && !obdFresh && !fakeMap) b.roadView.speedKmh = loc.speed * 3.6f
+            if (loc.hasSpeed() && !obdFresh && !fakeMap) {
+                b.roadView.speedKmh = loc.speed * 3.6f
+                egoKmh = loc.speed * 3.6f; egoAt = SystemClock.elapsedRealtime()
+            }
         }
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) { b.roadView.speedKmh = null }
@@ -1069,7 +1344,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_LOCATION && roadMode && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
+        if (requestCode == REQ_LOCATION && (roadMode || adasOn) && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
             startSpeed()
         }
         if (requestCode == REQ_BT) {
@@ -1136,6 +1411,7 @@ class MainActivity : AppCompatActivity() {
         b.carVolts.text = d.volts?.let { "%.1f V".format(it) } ?: ""
         if (d.speed != null) {
             obdSpeedAt = SystemClock.elapsedRealtime()
+            egoKmh = d.speed.toFloat(); egoAt = obdSpeedAt
             if (roadMode) b.roadView.speedKmh = d.speed.toFloat()
         }
         // Setas e faróis (Ford Ka). A 0x3B3 chega ~2x/s e manda no liga/desliga; a 0x3C3 (a cada ~3 s)
@@ -1150,8 +1426,9 @@ class MainActivity : AppCompatActivity() {
         showLights(bodyOk && d.left, bodyOk && d.right, low, high)
     }
 
-    private var turnL = false
-    private var turnR = false
+    /** Setas do carro (OBD); o LDW lê na thread do detector. */
+    @Volatile private var turnL = false
+    @Volatile private var turnR = false
 
     private fun showLights(left: Boolean, right: Boolean, low: Boolean, high: Boolean) {
         turnL = left
@@ -1321,6 +1598,7 @@ class MainActivity : AppCompatActivity() {
             null
         }
         if (bmp == null) { detecting.set(false); return }
+        val vw = videoW; val vh = videoH
         // Build de teste: guarda o primeiro quadro que o detector recebe, para conferir o recorte
         val dump = BuildConfig.DEBUG && dumpNextFrame
         dumpNextFrame = false
@@ -1332,15 +1610,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 val det = roadDetector ?: RoadDetector(this).also { roadDetector = it }
+                // LDW: mesmo quadro, detecção de faixa sem modelo (funciona mesmo sem o detector)
+                adas?.onFrame(bmp, egoSpeed(), turnL, turnR, SystemClock.uptimeMillis())
                 if (!det.available) {
-                    runOnUiThread { b.roadView.message = det.error ?: "Detecção indisponível" }
+                    if (roadMode) runOnUiThread { b.roadView.message = det.error ?: "Detecção indisponível" }
                     return@execute
                 }
                 val seen = det.detect(bmp)
                 val now = SystemClock.uptimeMillis()
+                // FCW na mesma thread, mesmo quadro, mesma inferência (o FcwLogic é só conta)
+                adas?.onDetections(seen, vw, vh, egoSpeed(), now)
                 if (now - detSecStart > 1000) { detFps = detCount; detCount = 0; detSecStart = now }
                 detCount++
-                runOnUiThread {
+                if (roadMode) runOnUiThread {
                     b.roadView.message = null
                     b.roadView.fps = detFps
                     b.roadView.update(seen)

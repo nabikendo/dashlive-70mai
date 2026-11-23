@@ -186,6 +186,13 @@
                 android:layout_height="match_parent"
                 android:visibility="gone" />
 
+            <!-- Aviso de colisão (FCW) sobre a Estrada; fora da Estrada o aviso é só sonoro -->
+            <com.dashlive.app.adas.AdasOverlayView
+                android:id="@+id/adasOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/overlay"
                 android:layout_width="wrap_content"

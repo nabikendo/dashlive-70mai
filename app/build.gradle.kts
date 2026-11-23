@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.7.0"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 16
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.8.0-rc.1"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 17
 
 android {
     namespace = "com.dashlive.app"
@@ -72,6 +72,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // Detecção de carros, pessoas etc. no próprio tablet (simulação da estrada)
     implementation("org.tensorflow:tensorflow-lite-task-vision:0.4.4")
+    // Interpreter puro para o modelo de faixa do ADAS (a Task Library só traz a interface, sem o motor).
+    // Mesma versão da tensorflow-lite-api que a Task Library puxa. Não é LiteRT (ver CLAUDE.md, pendência #5).
+    debugImplementation("org.tensorflow:tensorflow-lite:2.13.0")
     // Estrada 3D noturna (motor 3D do Google + modelos .glb da Kenney, CC0, em assets/road3d)
     // 1.74.0: a última que compila com compileSdk 34 / Kotlin 1.9 (a 1.76+ exige Kotlin 2.4 e Android 37)
     val filament = "1.74.0"
