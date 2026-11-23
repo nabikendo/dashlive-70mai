@@ -50,6 +50,9 @@ class RoadDetector(context: Context) {
 
     val available: Boolean get() = detector != null
 
+    /** Quando a última placa de PARE perto foi vista (ms, relógio elapsedRealtime); 0 = nunca. */
+    @Volatile var stopSignSeenAt: Long = 0L
+
     fun detect(bmp: Bitmap): List<Seen> {
         val d = detector ?: return emptyList()
         val w = bmp.width.toFloat()
@@ -57,6 +60,11 @@ class RoadDetector(context: Context) {
         val out = ArrayList<Seen>()
         for (det in d.detect(TensorImage.fromBitmap(bmp))) {
             val cat = det.categories.firstOrNull() ?: continue
+            // placa de PARE (COCO "stop sign"): não é veículo; só avisa que há um PARE à frente
+            if (cat.label.lowercase() == "stop sign") {
+                if (cat.score >= 0.5f && det.boundingBox.height() / h >= STOP_MIN_H) stopSignSeenAt = android.os.SystemClock.elapsedRealtime()
+                continue
+            }
             val kind = when (cat.label.lowercase()) {
                 "car" -> Kind.CAR
                 "truck" -> Kind.TRUCK
@@ -130,5 +138,7 @@ class RoadDetector(context: Context) {
 
     companion object {
         const val MODEL = "efficientdet_lite0.tflite"
+        /** Altura mínima (fração do quadro) para contar uma placa de PARE como "perto". */
+        const val STOP_MIN_H = 0.06f
     }
 }

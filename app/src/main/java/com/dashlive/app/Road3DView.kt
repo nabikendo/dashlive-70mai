@@ -497,6 +497,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
     /** Nome da rua e número de faixas (para o painel), ou null sem mapa. */
     var streetInfo: String? = null
+    /** Limite de velocidade (km/h) da rua onde o carro está, pelo maxspeed do OSM; null se não há. */
+    var speedLimitKmh: Int? = null
         private set
 
     /** Ruas novas do OpenStreetMap (a posição é reencaixada no próximo quadro). */
@@ -684,6 +686,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val w = cc.segWay[cc.segAt(carS)]
         val la = cc.lanesAhead(cc.segAt(carS))
         streetInfo = (w.tags["name"] ?: w.tags["ref"] ?: "rua sem nome") + " • $la faixa" + (if (la > 1) "s" else "")
+        speedLimitKmh = SpeedLimit.parse(w.tags["maxspeed"])
     }
 
     /** Apaga a malha do trecho e volta para a estrada genérica. */
@@ -692,6 +695,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         destroyGroup(e)
         cor = null
         streetInfo = null
+        speedLimitKmh = null
         for (ent in genericEnts) if (!scene.hasEntity(ent)) scene.addEntity(ent)
     }
 

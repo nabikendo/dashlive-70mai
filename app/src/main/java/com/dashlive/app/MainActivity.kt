@@ -99,6 +99,8 @@ class MainActivity : AppCompatActivity() {
     private var phoneCamMode = false
     /** Graus que a imagem da câmera do celular gira para ficar em pé (0, 90, 180, 270). */
     private var phoneRot = 0
+    /** Contador para reduzir a detecção quando o aparelho esquenta. */
+    private var thermalTick = 0
 
     // Câmera da direita (a outra do par frontal/traseira), sempre pelo player nativo
     private var rearPlayer: NativePlayer? = null
@@ -131,7 +133,17 @@ class MainActivity : AppCompatActivity() {
             if (!roadMode && !adasOn) return
             if (roadMode) {
                 if (SystemClock.elapsedRealtime() - dayCheckedAt > 60_000) updateDay()
-                b.roadView.mapStatus = b.road3d.streetInfo ?: mapState
+                // rua + limite de velocidade (aviso quando passa do limite)
+                val limit = b.road3d.speedLimitKmh
+                val speed = b.roadView.speedKmh
+                val stopAhead = roadDetector?.stopSignSeenAt?.let { it > 0 && SystemClock.elapsedRealtime() - it < 2000 } == true
+                val hot = if (thermalLevel() >= 3) "aparelho quente, detecção reduzida • " else ""
+                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "")
+                b.roadView.mapStatus = when {
+                    limit == null -> base
+                    speed != null && speed > limit + 3 -> "$base • ACIMA DO LIMITE ($limit km/h)"
+                    else -> "$base • limite $limit km/h"
+                }
                 // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
                 if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
                 // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
@@ -1308,6 +1320,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleRoad() {
         roadMode = !roadMode
+        if (roadMode) updateDay() // define dia/noite já ao abrir (para o modo noturno)
+        applyNightDim()
         if (!phone) b.overlay.visibility = if (roadMode || b.livePill.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         b.roadView.visibility = if (roadMode) View.VISIBLE else View.GONE
         b.adasOverlay.visibility = if (roadMode) View.VISIBLE else View.GONE
@@ -1404,6 +1418,20 @@ class MainActivity : AppCompatActivity() {
      * Dia ou noite na cena 3D: "auto" usa a altura do sol na última posição do GPS (sem posição
      * ainda: das 6h às 18h); "day"/"night" forçam pelo botão da Estrada.
      */
+    /**
+     * Modo noturno: com a Estrada aberta à noite, o brilho da tela baixa (o motorista não fica
+     * ofuscado). Fora disso, volta ao brilho do sistema. Ligado por padrão (pref nightDim).
+     */
+    private fun applyNightDim() {
+        val dim = roadMode && !b.road3d.day && prefs.getBoolean("nightDim", true)
+        val target = if (dim) 0.2f else android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        val lp = window.attributes
+        if (lp.screenBrightness != target) {
+            lp.screenBrightness = target
+            window.attributes = lp
+        }
+    }
+
     private fun updateDay() {
         dayCheckedAt = SystemClock.elapsedRealtime()
         val mode = prefs.getString("roadDay", "auto")
@@ -1413,6 +1441,7 @@ class MainActivity : AppCompatActivity() {
         else java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) in 6..17
         val day = when (mode) { "day" -> true; "night" -> false; else -> autoDay }
         b.road3d.day = day
+        applyNightDim()
         b.roadView.dayLabel = when (mode) {
             "day" -> "Dia ☀"
             "night" -> "Noite ☾"
@@ -1582,7 +1611,13 @@ class MainActivity : AppCompatActivity() {
         if (!hasBtPermission()) { showCarStatus("Toque para permitir o Bluetooth", false); return }
         obd = ObdManager(
             this, obdAddr,
-            onState = { text, ok -> runOnUiThread { if (obd != null) showCarStatus(if (ok) "$obdName • conectado" else text, ok) } },
+            onState = { text, ok ->
+                runOnUiThread {
+                    if (obd != null) showCarStatus(if (ok) "$obdName • conectado" else text, ok)
+                    // carro ligado (OBD conectou): abre a Estrada sozinha, se a opção estiver ligada
+                    if (ok && obd != null && !roadMode && prefs.getBoolean("autoRoad", true)) toggleRoad()
+                }
+            },
             onData = { d -> runOnUiThread { if (obd != null) showCarData(d) } },
         ).also { it.start() }
     }
@@ -1790,6 +1825,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Pega um quadro do vídeo e manda o detector olhar, sem travar a tela. */
     private fun grabAndDetect() {
+        // aparelho quente: detecta em menos quadros para não travar (nível 3 = grave, 4 = crítico)
+        val heat = thermalLevel()
+        if (heat >= 3 && (++thermalTick % (if (heat >= 4) 4 else 2)) != 0) return
         if (!useNative || !detecting.compareAndSet(false, true)) return
         val tv = b.textureView
         if (!tv.isAvailable || tv.width == 0 || tv.height == 0 || videoW <= 0 || videoH <= 0) {
@@ -1856,6 +1894,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+
+    /** Nível térmico do aparelho (0 = frio ... 4 = crítico); 0 em versões antigas do Android. */
+    private fun thermalLevel(): Int =
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            getSystemService(android.os.PowerManager::class.java)?.currentThermalStatus ?: 0
+        } else 0
 
     /** Gira um quadro em graus (0, 90, 180, 270) para ficar em pé. */
     private fun rotateBitmap(src: Bitmap, deg: Int): Bitmap {

@@ -51,6 +51,8 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         var blinkR = false
         /** Vindo de frente (faróis brancos): a cena 3D mostra o farol em vez da lanterna. */
         var oncoming = false
+        /** Quantas vezes foi visto (confirma o objeto depois de algumas observações). */
+        var hits = 0
     }
 
     /**
@@ -82,6 +84,8 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
     var lightsKnown = false
 
     private val tracks = ArrayList<Track>()
+    /** Objetos vistos há pouco, ainda não confirmados: não aparecem até serem confirmados. */
+    private val pending = ArrayList<Track>()
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
     private val rect = RectF()
@@ -127,38 +131,59 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
 
     /** Recebe o que o detector viu no quadro mais recente. */
     fun update(seen: List<Seen>) {
-        val used = HashSet<Track>()
-        for (s in seen) {
+        // todos os rastros (confirmados e ainda em observação) disputam as detecções deste quadro
+        val all = ArrayList<Track>(tracks.size + pending.size).apply { addAll(tracks); addAll(pending) }
+        val n = seen.size
+        val m = all.size
+        val xs = FloatArray(n)
+        val zs = FloatArray(n)
+        val cost = Array(n) { DoubleArray(m) }
+        for (i in 0 until n) {
+            val s = seen[i]
             val yb = ((s.b - HORIZON) / (1f - HORIZON)).coerceIn(0.03f, 1f)
             val z = (3.5f / yb).coerceAtMost(80f)
             val x = ((s.l + s.r) / 2f - 0.5f) * 2f * LATERAL * z
-            var best: Track? = null
-            var bd = 3f
-            for (t in tracks) {
-                if (t.kind != s.kind || t in used) continue
-                val d = hypot(t.tx - x, (t.tz - z) * 0.5f)
-                if (d < bd) { bd = d; best = t }
+            xs[i] = x; zs[i] = z
+            for (j in 0 until m) {
+                val t = all[j]
+                cost[i][j] = TrackMatch.cost(
+                    sameKind = t.kind == s.kind,
+                    dist = hypot(t.tx - x, (t.tz - z) * 0.5f).toDouble(),
+                    iou = TrackMatch.iou(s.l, s.t, s.r, s.b, t.tl, t.tt, t.tr, t.tb),
+                )
             }
-            val tr = best ?: Track(s.kind, x, z, x, z, s.l, s.t, s.r, s.b, s.l, s.t, s.r, s.b).also { tracks += it }
-            tr.tx = x; tr.tz = z
+        }
+        // atribuição ótima (húngaro): cada detecção vai ao rastro de menor custo, sem trocar carros
+        val pick = TrackMatch.assign(cost)
+        val matched = HashSet<Track>()
+        val now = android.os.SystemClock.uptimeMillis()
+        for (i in 0 until n) {
+            val s = seen[i]
+            val tr = if (pick[i] >= 0) all[pick[i]] else Track(
+                s.kind, xs[i], zs[i], xs[i], zs[i], s.l, s.t, s.r, s.b, s.l, s.t, s.r, s.b,
+            ).also { pending += it }
+            tr.tx = xs[i]; tr.tz = zs[i]
             tr.tl = s.l; tr.tt = s.t; tr.tr = s.r; tr.tb = s.b
             tr.missed = 0
+            tr.hits++
             tr.oncoming = s.oncoming
-            val now = android.os.SystemClock.uptimeMillis()
             tr.ambL.add(now, s.ambL); tr.ambR.add(now, s.ambR)
             tr.blinkL = tr.ambL.blinking(now)
             tr.blinkR = tr.ambR.blinking(now)
-            used += tr
+            matched += tr
         }
-        val iter = tracks.iterator()
-        while (iter.hasNext()) {
-            val t = iter.next()
-            if (t !in used) { t.missed++; if (t.missed > 4) iter.remove() }
-        }
+        // quem não foi visto neste quadro conta como perdido
+        for (t in all) if (t !in matched) t.missed++
+        // confirmação: um objeto só aparece depois de algumas observações
+        val promote = pending.filter { TrackRules.confirmed(it.hits) }
+        if (promote.isNotEmpty()) { pending.removeAll(promote.toSet()); tracks += promote }
+        // descarte: o não confirmado sai rápido, o confirmado espera mais
+        tracks.removeAll { TrackRules.dead(it.hits, it.missed) }
+        pending.removeAll { TrackRules.dead(it.hits, it.missed) }
         postInvalidateOnAnimation()
     }
 
-    fun clear() { tracks.clear(); invalidate() }
+    fun clear() { tracks.clear(); pending.clear(); invalidate() }
 
     // ---------------------------------------------------------------- toque (botão de estilo)
 

@@ -1,3 +1,16 @@
+## DashLive 1.11.0
+
+Estrada com rastreamento mais estável e avisos de rua.
+
+- **Veículos mais estáveis.** Cada detecção vai para o veículo de menor custo (atribuição ótima), e um objeto só aparece depois de ser visto algumas vezes. Carros que passam perto não trocam de identidade.
+- **Limite de velocidade.** A barra da Estrada mostra o limite da rua (pelo OpenStreetMap) e avisa quando você passa dele.
+- **Placa de PARE.** Quando uma placa de PARE aparece perto, a barra mostra "PARE à frente".
+- **Início automático.** Com o adaptador OBD2 conectado, a Estrada abre sozinha (pode ser desligado em Ajustes).
+- **Modo noturno.** Com a Estrada aberta à noite, o brilho da tela diminui.
+- **Aparelho quente.** Quando o tablet esquenta, a detecção roda em menos quadros, e a barra avisa.
+
+Limitações conhecidas: a verificação de movimento e os sinais de neblina, portas, freio e volante ainda não estão prontos. A Estrada com o cabo conectado ao carro ainda precisa ser testada.
+
 ## DashLive 1.10.0
 
 Estrada mais limpa e diagnóstico para gravações.
