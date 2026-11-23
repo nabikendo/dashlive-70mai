@@ -128,7 +128,8 @@ class MainActivity : AppCompatActivity() {
                 // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
                 if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
                 // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
-                if (gpsOn && !obdFresh && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+                // (na rota de teste a velocidade vem da rota, não do GPS)
+                if (gpsOn && !obdFresh && !fakeMap && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
             }
             if (roadDemo) {
                 val t = SystemClock.uptimeMillis() / 1000f
@@ -1377,7 +1378,22 @@ class MainActivity : AppCompatActivity() {
             return Seen(kind, 0.9f, cx - half, b - ht, cx + half, b)
         }
         val wave = kotlin.math.sin(t * 0.6f)
-        return listOf(
+        // ultrapassagem: um carro na faixa da esquerda vem da frente, passa por você e some atrás
+        // (a cada 16 s); na última parte ele "volta" para a sua faixa com o pisca ligado
+        val ph = (t % 16f) / 16f
+        // começa atrás do caminhão (z 26) para não sobrepor; depois de passar (ph 0,45 a 0,65) volta para a sua faixa
+        val passZ = 18f - 22f * ph
+        val lane = -3.5f + 3.7f * ((ph - 0.45f) / 0.2f).coerceIn(0f, 1f)
+        val overtake = if (passZ > 1.5f) at(Kind.CAR, lane, passZ, 1.8f, 1.5f).apply {
+            ambR = if (ph > 0.45f && (SystemClock.uptimeMillis() / 370) % 2 == 0L) 0.08f else 0.005f
+        } else null
+        // carro vindo de frente na faixa da esquerda (faróis brancos): aparece a 40 m e chega até você (a cada 9 s)
+        val pc = (t % 9f) / 9f
+        val oncomingZ = 40f - 36f * pc
+        val oncomingCar = if (oncomingZ > 4f) at(Kind.CAR, -3.4f, oncomingZ, 1.8f, 1.5f).apply { oncoming = true } else null
+        return listOfNotNull(
+            overtake,
+            oncomingCar,
             at(Kind.CAR, 0.2f, 14f + 4f * wave, 1.8f, 1.5f),
             at(Kind.TRUCK, -3.6f, 26f, 2.5f, 3.4f),
             // este carro "dá seta para a direita" (âmbar acende e apaga a cada ~0,37 s)
@@ -1385,7 +1401,7 @@ class MainActivity : AppCompatActivity() {
                 ambR = if ((SystemClock.uptimeMillis() / 370) % 2 == 0L) 0.08f else 0.005f
             },
             at(Kind.BUS, 3.7f, 38f, 2.5f, 3.1f),
-            at(Kind.MOTORCYCLE, -3.3f, 11f + 3f * wave, 0.8f, 1.5f),
+            at(Kind.MOTORCYCLE, -5.2f, 11f + 3f * wave, 0.8f, 1.5f), // no acostamento, fora da faixa do carro que passa
             at(Kind.PERSON, 6.6f, 7f, 0.6f, 1.7f),
         )
     }

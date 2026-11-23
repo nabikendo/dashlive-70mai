@@ -1,3 +1,22 @@
+## DashLive 1.9.0
+
+Estrada com mais trânsito, carros vindo de frente e correções visuais.
+
+- **Carros na faixa.** Veículos ficam sempre no centro da faixa, dentro do asfalto.
+- **Visual mais limpo.** Carros em tons de cinza, cartão da Estrada só com o nome da rua. Os números de detecção ficam só no build de teste.
+- **Novos veículos.** Caminhão longo e ônibus usam um modelo de caminhão mais comprido.
+- **Ultrapassagem.** A Estrada mostra carros passando pela faixa da esquerda.
+- **Carros de frente (experimental).** Carro que vem de frente, com faróis brancos, aparece virado para você na faixa da esquerda. A detecção ainda precisa de calibração com vídeo real.
+- **Câmera de ré.** Em Ajustes → Câmera de ré, você pode mostrar a traseira ao ligar a seta. O padrão é desligado, e o tempo depois da seta é configurável. A Estrada também funciona com a lente de ré.
+- **Ajustes → Sobre.** Endereço, motor de vídeo e versão saíram da tela principal.
+- **Rota de teste (build de teste).** Anda por um arquivo GeoJSON a 60 km/h.
+- **Etiquetas de distância.** Não se sobrepõem mais, e um objeto que sumiu não mantém etiqueta.
+
+Limitações conhecidas:
+- O alerta de colisão (FCW) ainda trata carro de frente como qualquer objeto. Pode disparar com um carro vindo de frente na sua faixa.
+- Os números dos carros de frente e das lanternas precisam de calibração com vídeo real.
+- A câmera de ré e a troca pela seta ainda não foram testadas no carro.
+
 ## DashLive 1.8.1
 
 Correções na Estrada 3D, no aviso de Wi-Fi da câmera e no layout do painel.

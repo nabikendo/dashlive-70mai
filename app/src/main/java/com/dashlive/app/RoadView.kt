@@ -49,20 +49,25 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         val ambR = BlinkDetector()
         var blinkL = false
         var blinkR = false
+        /** Vindo de frente (faróis brancos): a cena 3D mostra o farol em vez da lanterna. */
+        var oncoming = false
     }
 
     /**
      * Um objeto para a cena 3D: tipo, lado x (m, direita +), distância z (m) da câmera do painel e
      * pisca ligado (esquerda/direita; os dois = pisca-alerta).
      */
-    class Obj(val id: Int, val kind: Kind, val x: Float, val z: Float, val blinkL: Boolean = false, val blinkR: Boolean = false)
+    class Obj(
+        val id: Int, val kind: Kind, val x: Float, val z: Float,
+        val blinkL: Boolean = false, val blinkR: Boolean = false, val oncoming: Boolean = false,
+    )
 
     /** Câmera de ré: os objetos vistos estão ATRÁS do carro (a cena 3D os põe para trás). */
     var rearView = false
         set(v) { if (field != v) { field = v; tracks.clear() }; invalidate() }
 
     fun objects(): List<Obj> = tracks.map {
-        Obj(it.id, it.kind, it.x, if (rearView) -it.z else it.z, it.blinkL, it.blinkR)
+        Obj(it.id, it.kind, it.x, if (rearView) -it.z else it.z, it.blinkL, it.blinkR, it.oncoming && !rearView)
     }
 
     /** A cena 3D (Road3DView) está desenhando a estrada por baixo: aqui só o painel por cima. */
@@ -77,6 +82,8 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
     private val rect = RectF()
+    /** Etiquetas de distância já desenhadas neste quadro (evita uma em cima da outra). */
+    private val labelRects = ArrayList<RectF>()
     private val toggleRect = RectF()
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val dp = resources.displayMetrics.density
@@ -133,6 +140,7 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
             tr.tx = x; tr.tz = z
             tr.tl = s.l; tr.tt = s.t; tr.tr = s.r; tr.tb = s.b
             tr.missed = 0
+            tr.oncoming = s.oncoming
             val now = android.os.SystemClock.uptimeMillis()
             tr.ambL.add(now, s.ambL); tr.ambR.add(now, s.ambR)
             tr.blinkL = tr.ambL.blinking(now)
@@ -516,7 +524,9 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         }
 
         // 4) veículos e pessoas: brilho no chão + cantos, sem caixa cheia
-        for (t in tracks.sortedBy { it.b }) drawTarget(cv, t, vr, t === lead)
+        labelRects.clear()
+        // do mais perto para o mais longe: a etiqueta mais próxima tem prioridade
+        for (t in tracks.sortedByDescending { it.b }) drawTarget(cv, t, vr, t === lead)
 
         // 5) seu carro por cima de tudo
         drawEgoRear(cv, w / 2f, carBottom, carW)
@@ -553,7 +563,8 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         cv.drawPath(path, p)
         p.strokeCap = Paint.Cap.BUTT
         // distância numa etiqueta pequena
-        if (d < 40f && bw > 14f * dp) {
+        // só objeto visto neste quadro: um rastro que sumiu não ganha etiqueta
+        if (d < 40f && bw > 14f * dp && t.missed == 0) {
             val label = "${d.roundToInt()} m"
             p.style = Paint.Style.FILL
             p.textSize = 13f * dp
@@ -562,11 +573,17 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
             val ph = 20f * dp
             val cx = (l + r) / 2f
             rect.set(cx - tw / 2f - 8f * dp, tp0 - ph - 6f * dp, cx + tw / 2f + 8f * dp, tp0 - 6f * dp)
-            p.color = 0xB3101418.toInt()
-            cv.drawRoundRect(rect, ph / 2f, ph / 2f, p)
-            p.color = col
-            p.textAlign = Paint.Align.CENTER
-            cv.drawText(label, cx, rect.centerY() + p.textSize * 0.36f, p)
+            // etiquetas que se encostam somem: o objeto já tem o retângulo, e duas distâncias
+            // em cima uma da outra (um rastro antigo do mesmo carro) ficavam ilegíveis
+            val overlaps = labelRects.any { RectF.intersects(it, rect) }
+            if (!overlaps) {
+                labelRects += RectF(rect)
+                p.color = 0xB3101418.toInt()
+                cv.drawRoundRect(rect, ph / 2f, ph / 2f, p)
+                p.color = col
+                p.textAlign = Paint.Align.CENTER
+                cv.drawText(label, cx, rect.centerY() + p.textSize * 0.36f, p)
+            }
             p.isFakeBoldText = false
         }
         // pisca do outro veículo (experimental): bolinha âmbar piscando no canto do lado da seta
@@ -811,8 +828,14 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         p.textSize = 12f * dp
         p.color = 0x99FFFFFF.toInt()
         val n = tracks.size
+        // limpo: no aparelho só a rua; os números de detecção ficam no build de teste
+        val info = if (BuildConfig.DEBUG) {
+            "${if (n == 1) "1 objeto" else "$n objetos"} • $fps det/s • ${mapStatus ?: "estimativa"}"
+        } else {
+            mapStatus ?: "estimativa"
+        }
         cv.drawText(
-            "${if (n == 1) "1 objeto" else "$n objetos"} • $fps det/s • ${mapStatus ?: "estimativa"}",
+            info,
             x0 + pad, rect.bottom - pad + 2f * dp, p,
         )
     }

@@ -11,6 +11,8 @@ class Seen(val kind: Kind, val score: Float, val l: Float, val t: Float, val r: 
     /** Fração de pixels âmbar forte no canto esquerdo/direito das lanternas (para achar o pisca). */
     var ambL = 0f
     var ambR = 0f
+    /** Carro vindo de frente (faróis brancos predominam sobre as lanternas). Ver [Oncoming]. */
+    var oncoming = false
 }
 
 enum class Kind(val widthM: Float, val heightM: Float) {
@@ -78,6 +80,9 @@ class RoadDetector(context: Context) {
                 if (side >= 4 && y1 - y0 >= 3) {
                     s.ambL = amber(bmp, x0, x0 + side, y0, y1)
                     s.ambR = amber(bmp, x1 - side, x1, y0, y1)
+                    // de frente ou de trás: faróis brancos x lanternas vermelhas na caixa toda
+                    val (head, tail) = lights(bmp, x0, x1, y0, y1)
+                    s.oncoming = Oncoming.isOncoming(head, tail)
                 }
             }
             out += s
@@ -98,6 +103,22 @@ class RoadDetector(context: Context) {
             if (r >= 170 && g in 90..215 && b <= 120 && r - b >= 90 && g * 100 >= r * 45) c++
         }
         return c.toFloat() / px.size
+    }
+
+    /** Frações (faróis, lanternas) dos pixels da caixa; ver [Oncoming] para o que conta como cada um. */
+    private fun lights(bmp: Bitmap, x0: Int, x1: Int, y0: Int, y1: Int): Pair<Float, Float> {
+        val ax = x0.coerceIn(0, bmp.width - 1); val bx = x1.coerceIn(ax + 1, bmp.width)
+        val ay = y0.coerceIn(0, bmp.height - 1); val by = y1.coerceIn(ay + 1, bmp.height)
+        val w = bx - ax; val h = by - ay
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, ax, ay, w, h)
+        var head = 0; var tail = 0
+        for (p in px) {
+            val r = (p shr 16) and 255; val g = (p shr 8) and 255; val b = p and 255
+            if (Oncoming.isHeadlightPixel(r, g, b)) head++
+            else if (Oncoming.isTaillightPixel(r, g, b)) tail++
+        }
+        return head.toFloat() / px.size to tail.toFloat() / px.size
     }
 
     fun close() {

@@ -98,6 +98,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val inScene = BooleanArray(instances.size)
         val owner = IntArray(instances.size) { -1 }
         val tail = IntArray(instances.size)
+        /** Faróis brancos (carro vindo de frente), na frente de cada cópia. */
+        val head = IntArray(instances.size)
         val blink = Array(instances.size) { IntArray(2) }
     }
     /** Quanto cada veículo já "virou" para o lado do pisca (0..1, anima) e para qual lado (-1/+1). */
@@ -105,7 +107,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     private var frameDt = 0.016f
     private val driftSide = HashMap<Int, Float>()
     private val carPools = ArrayList<Pool>()
-    private var truckPool: Pool? = null
+    /** Caminhões e ônibus: o caminhão de entrega e o caminhão longo (truck.glb), alternados por objeto. */
+    private val truckPools = ArrayList<Pool>()
     private var personPool: IntArray = IntArray(0)
     private var bikePool: IntArray = IntArray(0)
     private val personUsed = HashMap<Int, Int>()
@@ -623,9 +626,10 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             // meio na calçada (antes empilhava todos os veículos na única faixa)
             o = o.coerceIn(e[0] - 1.0f, e[1] + 1.0f)
         } else if (snap) {
-            val k = Math.round((o - e[0]) / LANE_W - 0.5f).coerceIn(0, n - 1)
-            val center = e[0] + (k + 0.5f) * LANE_W
-            o = center + (o - center) * 0.3f
+            // veículo: sempre no centro de uma faixa, dentro do asfalto (antes puxava só 70% e
+            // carros perto da linha ou da calçada ficavam meio fora da pista)
+            val k = kotlin.math.floor((o - e[0]) / LANE_W).toInt().coerceIn(0, n - 1)
+            o = e[0] + (k + 0.5f) * LANE_W
         } else {
             o = o.coerceIn(e[0] - 4f, e[1] + 4f)
         }
@@ -965,7 +969,9 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             carPools += newPool(e, inst, bb, dims)
         }
         val (tInst, tBox) = loadModel(e, "delivery.glb", 3, normal)
-        truckPool = newPool(e, tInst, tBox, floatArrayOf(2.5f, 3.3f, 8f))
+        truckPools += newPool(e, tInst, tBox, floatArrayOf(2.5f, 3.3f, 8f))
+        val (lInst, lBox) = loadModel(e, "truck.glb", 3, normal)
+        truckPools += newPool(e, lInst, lBox, floatArrayOf(2.5f, 3.6f, 9f))
 
         // pessoas e bicicletas/motos: caixas simples
         personPool = IntArray(4) {
@@ -996,6 +1002,12 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             }
             p.tail[i] = renderable(e, m, material(1.5f, 0.035f, 0.025f, unlit = true))
             hide(p.tail[i])
+            // faróis brancos (quando o carro vem de frente)
+            val hm = Mesh().apply {
+                for (sx in floatArrayOf(-1f, 1f)) wall(sx * hw - 0.25f, sx * hw + 0.25f, tailY - 0.1f, tailY + 0.02f, 0f, rgba(1f, 1f, 1f))
+            }
+            p.head[i] = renderable(e, hm, material(1.6f, 1.6f, 1.55f, unlit = true))
+            hide(p.head[i])
             // piscas âmbar (um de cada lado, por cima da lanterna, um pouco para fora)
             for (side in 0..1) {
                 val sx = if (side == 0) -1f else 1f
@@ -1235,13 +1247,15 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         if (cor != null) updateEgoLane(objs)
         val seen = HashSet<Int>()
         // veículos: cada objeto fica com a mesma cópia enquanto existir
-        val pools = carPools + listOfNotNull(truckPool)
+        val pools = carPools + truckPools
         for (p in pools) for (i in p.instances.indices) if (p.owner[i] >= 0 && objs.none { it.id == p.owner[i] }) release(p, i)
         for (o in objs) {
             seen += o.id
             when (o.kind) {
                 Kind.CAR, Kind.TRUCK, Kind.BUS -> {
-                    val pool = if (o.kind == Kind.CAR) carPools[o.id % carPools.size] else truckPool ?: continue
+                    val pool = if (o.kind == Kind.CAR) carPools[o.id % carPools.size]
+                        else if (truckPools.isEmpty()) continue
+                        else truckPools[o.id % truckPools.size] // ônibus e caminhão: alternam os modelos
                     var slot = pool.owner.indexOf(o.id)
                     if (slot < 0) slot = pool.owner.indexOf(-1).also { if (it >= 0) pool.owner[it] = o.id }
                     if (slot < 0) continue // sem cópia livre deste modelo
@@ -1258,7 +1272,9 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
                     val ds = driftSide[o.id] ?: 0f
                     // na faixa da rua (segue a curva do mapa), depois o deslocamento do pisca
                     roadSpot(dRear + l / 2f, o.x, true, spot)
-                    val yaw = spot[2]
+                    // de frente (faróis brancos): o carro gira 180° e fica virado para você
+                    val onc = o.oncoming && o.kind == Kind.CAR
+                    val yaw = if (onc) spot[2] + Math.PI.toFloat() else spot[2]
                     val sy = sin(yaw); val cy = cos(yaw)
                     val dd = ds * 0.9f * dr
                     val x = spot[0] + cy * dd
@@ -1266,10 +1282,17 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
                     place(inst, pool.box, x, z, pool.w, pool.h, l, yaw - ds * 0.18f * dr)
                     // lanternas na traseira (centro + metade do comprimento para trás)
                     val rx = x + sy * l / 2f; val rz = z + cy * l / 2f
-                    setT(pool.tail[slot], rx, 0f, rz + 0.03f)
                     val lit = RoadView.blinkOn()
-                    if (o.blinkL && lit) setT(pool.blink[slot][0], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][0])
-                    if (o.blinkR && lit) setT(pool.blink[slot][1], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][1])
+                    if (onc) {
+                        // a frente do carro (virado para você): faróis, sem lanternas nem pisca de trás
+                        hide(pool.tail[slot]); hide(pool.blink[slot][0]); hide(pool.blink[slot][1])
+                        setT(pool.head[slot], x - sy * l / 2f, 0f, z - cy * l / 2f + 0.03f)
+                    } else {
+                        hide(pool.head[slot])
+                        setT(pool.tail[slot], rx, 0f, rz + 0.03f)
+                        if (o.blinkL && lit) setT(pool.blink[slot][0], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][0])
+                        if (o.blinkR && lit) setT(pool.blink[slot][1], rx, 0f, rz + 0.05f) else hide(pool.blink[slot][1])
+                    }
                 }
                 Kind.PERSON -> {
                     val ent = take(personPool, personUsed, o.id) ?: continue
@@ -1305,7 +1328,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         p.owner[i] = -1
         val inst = p.instances[i] ?: return
         if (p.inScene[i]) { scene.removeEntities(inst.entities); p.inScene[i] = false }
-        hide(p.tail[i])
+        hide(p.tail[i]); hide(p.head[i])
         hide(p.blink[i][0]); hide(p.blink[i][1])
     }
 
