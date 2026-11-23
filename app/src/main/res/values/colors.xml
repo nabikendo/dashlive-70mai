@@ -17,4 +17,7 @@
     <color name="warn">#FFFDD663</color>
     <color name="video_bg">#FF000000</color>
     <color name="scrim">#B3000000</color>
+    <!-- luzes do painel do carro: seta/farol baixo verdes, farol alto azul -->
+    <color name="light_turn">#FF34C759</color>
+    <color name="light_high">#FF4C8DFF</color>
 </resources>

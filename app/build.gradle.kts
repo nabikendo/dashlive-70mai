@@ -4,8 +4,8 @@ plugins {
 }
 
 // Versão vem da Action (tag vX.Y.Z); valores locais servem para testes
-val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.6.0"
-val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 15
+val appVersionName = (project.findProperty("appVersionName") as String?) ?: "1.7.0"
+val appVersionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 16
 
 android {
     namespace = "com.dashlive.app"
@@ -18,6 +18,8 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("String", "UPDATE_REPO", "\"nabikendo/dashlive-70mai\"")
+        // Só ARM (tablets/celulares): o Filament e o TensorFlow trazem bibliotecas por processador
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     // A chave de assinatura NÃO fica no repositório: a Action a recebe pelo segredo
@@ -70,6 +72,13 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // Detecção de carros, pessoas etc. no próprio tablet (simulação da estrada)
     implementation("org.tensorflow:tensorflow-lite-task-vision:0.4.4")
+    // Estrada 3D noturna (motor 3D do Google + modelos .glb da Kenney, CC0, em assets/road3d)
+    // 1.74.0: a última que compila com compileSdk 34 / Kotlin 1.9 (a 1.76+ exige Kotlin 2.4 e Android 37)
+    val filament = "1.74.0"
+    implementation("com.google.android.filament:filament-android:$filament")
+    implementation("com.google.android.filament:gltfio-android:$filament")
 
     testImplementation("junit:junit:4.13.2")
+    // o org.json do Android não funciona nos testes do PC (OsmMapTest lê JSON do OpenStreetMap)
+    testImplementation("org.json:json:20240303")
 }

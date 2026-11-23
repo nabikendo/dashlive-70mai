@@ -41,7 +41,31 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         var tl: Float, var tt: Float, var tr: Float, var tb: Float,
         var l: Float, var t: Float, var r: Float, var b: Float,
         var missed: Int = 0,
-    )
+    ) {
+        /** Número fixo enquanto o objeto existir (a cena 3D usa para manter o mesmo carro). */
+        val id = ++trackIds
+        /** Pisca deste veículo (experimental): âmbar oscilando no canto esquerdo/direito. */
+        val ambL = BlinkDetector()
+        val ambR = BlinkDetector()
+        var blinkL = false
+        var blinkR = false
+    }
+
+    /**
+     * Um objeto para a cena 3D: tipo, lado x (m, direita +), distância z (m) da câmera do painel e
+     * pisca ligado (esquerda/direita; os dois = pisca-alerta).
+     */
+    class Obj(val id: Int, val kind: Kind, val x: Float, val z: Float, val blinkL: Boolean = false, val blinkR: Boolean = false)
+
+    fun objects(): List<Obj> = tracks.map { Obj(it.id, it.kind, it.x, it.z, it.blinkL, it.blinkR) }
+
+    /** A cena 3D (Road3DView) está desenhando a estrada por baixo: aqui só o painel por cima. */
+    var scene3d = false
+        set(v) { field = v; invalidate() }
+    /** Nome da rua do mapa (ou a situação do mapa), mostrado no cartão da cena 3D. */
+    var mapStatus: String? = null
+    /** O OBD2 está informando os faróis (sem isso a cena 3D deixa o farol baixo aceso). */
+    var lightsKnown = false
 
     private val tracks = ArrayList<Track>()
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -68,8 +92,16 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         set(v) { field = v; invalidate() }
     /** Chamado quando o usuário troca o estilo pelo botão desenhado na tela. */
     var onStyleChange: ((Style) -> Unit)? = null
+    /** Quanto subir o botão de estilo (px); em tela cheia o botão "sair" ocupa o canto de baixo. */
+    var toggleLift = 0f
+        set(v) { field = v; invalidate() }
     /** Velocidade do GPS em km/h; null = sem GPS. */
     var speedKmh: Float? = null
+    /** Setas e faróis do carro (OBD2). As setas piscam no ritmo de [blinkOn]. */
+    var turnLeft = false
+    var turnRight = false
+    var lowBeam = false
+    var highBeam = false
 
     fun setVideoSize(w: Int, h: Int) {
         if (w > 0 && h > 0) { videoW = w; videoH = h }
@@ -95,6 +127,10 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
             tr.tx = x; tr.tz = z
             tr.tl = s.l; tr.tt = s.t; tr.tr = s.r; tr.tb = s.b
             tr.missed = 0
+            val now = android.os.SystemClock.uptimeMillis()
+            tr.ambL.add(now, s.ambL); tr.ambR.add(now, s.ambR)
+            tr.blinkL = tr.ambL.blinking(now)
+            tr.blinkR = tr.ambR.blinking(now)
             used += tr
         }
         val iter = tracks.iterator()
@@ -110,14 +146,25 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
     // ---------------------------------------------------------------- toque (botão de estilo)
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        if (!toggleRect.contains(e.x, e.y)) return false
+        val onDay = scene3d && dayLabel != null && dayRect.contains(e.x, e.y)
+        if (!toggleRect.contains(e.x, e.y) && !onDay) return false
         if (e.action == MotionEvent.ACTION_UP) {
-            style = if (style == Style.SCENE) Style.VIDEO else Style.SCENE
-            onStyleChange?.invoke(style)
+            if (onDay) {
+                onDayButton?.invoke()
+            } else {
+                style = if (style == Style.SCENE) Style.VIDEO else Style.SCENE
+                onStyleChange?.invoke(style)
+            }
             performClick()
         }
         return true
     }
+
+    /** Texto do botão de dia/noite da cena 3D ("Auto ☀", "Dia", "Noite"); null = sem botão. */
+    var dayLabel: String? = null
+        set(v) { field = v; invalidate() }
+    var onDayButton: (() -> Unit)? = null
+    private val dayRect = RectF()
 
     override fun performClick(): Boolean { super.performClick(); return true }
 
@@ -139,8 +186,9 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
 
         val w = width.toFloat()
         val h = height.toFloat()
-        if (style == Style.SCENE) drawScene(cv, w, h) else drawOverlay(cv, w, h)
+        if (style == Style.VIDEO) drawOverlay(cv, w, h, dt) else if (!scene3d) drawScene(cv, w, h)
         drawHud(cv, w, h)
+        drawIndicators(cv, w)
         message?.let { drawMessage(cv, it, w, h) }
         postInvalidateOnAnimation()
     }
@@ -337,105 +385,430 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         box(cv, -0.93f, 0.93f, 0.25f, 0.95f, 0f, EGO_LEN, 0xFFFFFFFF.toInt(), 0xFFE8EAED.toInt(), 0xFFC9CDD2.toInt(), 0.03f, 0.15f)
         box(cv, -0.84f, 0.84f, 0.95f, 1.42f, 0.9f, 3.7f, 0xFF3C4043.toInt(), 0xFF5F6368.toInt(), 0xFF4A4F55.toInt(), 0.16f, 0.5f)
         tailLights(cv, 0f, 0.93f, 0.66f, 0.80f, 0f)
+        // pisca âmbar por cima da lanterna do lado da seta
+        if (blinkOn()) {
+            val amber = 0xFFFFB300.toInt()
+            if (turnLeft) quad(cv, amber, -0.92f, 0.62f, -0.02f, -0.60f, 0.62f, -0.02f, -0.60f, 0.86f, -0.02f, -0.92f, 0.86f, -0.02f)
+            if (turnRight) quad(cv, amber, 0.60f, 0.62f, -0.02f, 0.92f, 0.62f, -0.02f, 0.92f, 0.86f, -0.02f, 0.60f, 0.86f, -0.02f)
+        }
     }
 
     // ---------------------------------------------------------------- sobre o vídeo
 
-    /** Área onde o vídeo aparece (encaixado, com barras pretas se precisar). */
+    /**
+     * Área do vídeo na tela. No estilo [Style.VIDEO] o vídeo PREENCHE o cartão (corta um pouco em
+     * cima/embaixo, como uma câmera de cinema); a MainActivity usa a mesma regra no TextureView.
+     */
     private fun videoRect(w: Float, h: Float): RectF {
-        val sc = minOf(w / videoW, h / videoH)
+        val sc = videoScale(videoW, videoH, w, h, style == Style.VIDEO)
         val vw = videoW * sc
         val vh = videoH * sc
         return RectF((w - vw) / 2f, (h - vh) / 2f, (w + vw) / 2f, (h + vh) / 2f)
     }
 
-    private fun drawOverlay(cv: Canvas, w: Float, h: Float) {
+    // Brilhos suaves (BlurMaskFilter funciona com aceleração de hardware a partir do Android 9)
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var glowRadius = 0f
+    private var pulse = 0f
+    private var vignette: Shader? = null
+    private var vignetteKey = 0f
+    private val clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+
+    private fun glowPaint(radius: Float): Paint {
+        if (radius != glowRadius) {
+            glow.maskFilter = android.graphics.BlurMaskFilter(radius, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            glowRadius = radius
+        }
+        glow.style = Paint.Style.FILL
+        glow.shader = null
+        return glow
+    }
+
+    /**
+     * Estilo "sobre o vídeo", inspirado nos painéis de carros com piloto automático: a rua de verdade
+     * ao fundo com cor de cinema, o seu carro visto de trás embaixo, uma faixa azul brilhante saindo
+     * dele até o veículo à frente e os veículos marcados por um brilho no chão.
+     */
+    private fun drawOverlay(cv: Canvas, w: Float, h: Float, dt: Float) {
         val vr = videoRect(w, h)
-        val yH = vr.top + HORIZON * vr.height()
-        val yB = vr.top + 0.84f * vr.height() // acima do capô
-        val cx = vr.centerX()
-        // veículo à frente no meio da imagem: o caminho termina nele
-        val lead = tracks.filter { (it.l + it.r) / 2f in 0.36f..0.64f && it.b > HORIZON + 0.02f }.maxByOrNull { it.b }
-        val yEnd = lead?.let { (vr.top + it.b * vr.height()).coerceIn(yH + 4f, yB - 4f) } ?: (yH + 0.06f * vr.height())
-        val bottomHalf = 0.17f * vr.width()
-        val endHalf = bottomHalf * (yEnd - yH) / (yB - yH)
-        path.reset()
-        path.moveTo(cx - bottomHalf, yB)
-        path.lineTo(cx + bottomHalf, yB)
-        path.lineTo(cx + endHalf, yEnd)
-        path.lineTo(cx - endHalf, yEnd)
-        path.close()
+        // chão plano: a linha da imagem e o lado de um ponto a z metros (mesmo modelo do update())
+        fun gy(z: Float) = vr.top + (HORIZON + 3.5f / z * (1f - HORIZON)) * vr.height()
+        fun gx(x: Float, z: Float) = vr.left + (0.5f + x / (2f * LATERAL * z)) * vr.width()
+        fun zAt(y: Float): Float {
+            val yb = ((y - vr.top) / vr.height() - HORIZON) / (1f - HORIZON)
+            return 3.5f / yb.coerceAtLeast(0.02f)
+        }
+
+        // 1) cor de cinema: um pouco mais escuro, cantos escuros (o desenho por cima se destaca)
         p.style = Paint.Style.FILL
-        p.shader = LinearGradient(0f, yB, 0f, yEnd, 0xB02B7FFF.toInt(), 0x402B7FFF, Shader.TileMode.CLAMP)
-        cv.drawPath(path, p)
+        p.color = 0x2A06101C
+        cv.drawRect(0f, 0f, w, h, p)
+        val vk = w * 7f + h
+        if (vignette == null || vignetteKey != vk) {
+            vignette = android.graphics.RadialGradient(
+                w / 2f, h * 0.55f, maxOf(w, h) * 0.75f,
+                intArrayOf(0x00000000, 0x22000000, 0xAA000000.toInt()), floatArrayOf(0f, 0.6f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            vignetteKey = vk
+        }
+        p.shader = vignette
+        cv.drawRect(0f, 0f, w, h, p)
         p.shader = null
 
-        // caixas dos veículos e pessoas
-        val r = 10f * dp
-        for (t in tracks) {
-            val d = t.z
-            val col = when { d < 8f -> 0xFFF28B82.toInt(); d < 16f -> 0xFFFDD663.toInt(); else -> 0xFF8AB4F8.toInt() }
-            rect.set(vr.left + t.l * vr.width(), vr.top + t.t * vr.height(), vr.left + t.r * vr.width(), vr.top + t.b * vr.height())
+        // 2) seu carro (posição fixa na tela) e onde começa o caminho
+        val carW = minOf(0.17f * w, 0.36f * h)
+        val carBottom = minOf(vr.bottom, h) - 0.035f * h
+        val z0 = zAt(carBottom - 0.10f * carW)
+        // largura do caminho no chão = largura do carro na base, para a perspectiva bater
+        val halfM = (carW * 0.5f / vr.width()) * 2f * LATERAL * z0
+
+        // veículo à frente na sua faixa: o caminho termina nele
+        val lead = tracks.filter {
+            abs(it.x) < 1.6f && it.b > HORIZON + 0.02f && vr.top + it.b * vr.height() < carBottom - 0.6f * carW
+        }.maxByOrNull { it.b }
+        val zEnd = (lead?.let { zAt(vr.top + it.b * vr.height()) + 0.5f } ?: 55f).coerceAtLeast(z0 + 2f)
+
+        // 3) caminho azul: brilho largo, faixa principal e pulsos andando para a frente
+        fun ribbon(z1: Float, z2: Float, half: Float) {
+            path.reset()
+            val steps = 14
+            for (i in 0..steps) {
+                val z = z1 + (z2 - z1) * i / steps
+                if (i == 0) path.moveTo(gx(-half, z), gy(z)) else path.lineTo(gx(-half, z), gy(z))
+            }
+            for (i in steps downTo 0) {
+                val z = z1 + (z2 - z1) * i / steps
+                path.lineTo(gx(half, z), gy(z))
+            }
+            path.close()
+        }
+        val yStart = gy(z0)
+        val yEnd = gy(zEnd)
+        ribbon(z0, zEnd, halfM * 1.35f)
+        val g = glowPaint(18f * dp)
+        g.shader = LinearGradient(0f, yStart, 0f, yEnd, 0x902F8CFF.toInt(), 0x202F8CFF, Shader.TileMode.CLAMP)
+        cv.drawPath(path, g)
+        g.shader = null
+        ribbon(z0, zEnd, halfM)
+        p.shader = LinearGradient(0f, yStart, 0f, yEnd, 0xD8389BFF.toInt(), 0x50389BFF, Shader.TileMode.CLAMP)
+        cv.drawPath(path, p)
+        p.shader = null
+        // pulsos de luz: mais rápidos quanto maior a velocidade
+        pulse = (pulse + dt * (0.35f + (speedKmh ?: 0f) / 90f)) % 1f
+        for (i in 0 until 3) {
+            val s = (pulse + i / 3f) % 1f
+            val zc = z0 + (zEnd - z0) * s * s // espaçados em perspectiva
+            ribbon(zc, (zc + 0.9f + zc * 0.05f).coerceAtMost(zEnd), halfM * 0.96f)
+            p.color = (((1f - s) * 0x34).toInt() shl 24) or 0xBFE0FF
+            cv.drawPath(path, p)
+        }
+        // ponta: barra luminosa no fim do caminho (embaixo do veículo à frente, se houver)
+        if (lead != null) {
+            rect.set(gx(-halfM * 1.2f, zEnd), yEnd - 3f * dp, gx(halfM * 1.2f, zEnd), yEnd + 3f * dp)
+            cv.drawRoundRect(rect, 3f * dp, 3f * dp, glowPaint(8f * dp).apply { color = 0xFF6FB6FF.toInt() })
+        }
+
+        // 4) veículos e pessoas: brilho no chão + cantos, sem caixa cheia
+        for (t in tracks.sortedBy { it.b }) drawTarget(cv, t, vr, t === lead)
+
+        // 5) seu carro por cima de tudo
+        drawEgoRear(cv, w / 2f, carBottom, carW)
+    }
+
+    private fun drawTarget(cv: Canvas, t: Track, vr: RectF, isLead: Boolean) {
+        val d = t.z
+        val col = when {
+            t.kind == Kind.PERSON || t.kind == Kind.BICYCLE -> 0xFFFFB74D.toInt()
+            d < 8f -> 0xFFFF6B5E.toInt()
+            d < 16f -> 0xFFFFD45E.toInt()
+            else -> 0xFF8CC4FF.toInt()
+        }
+        val l = vr.left + t.l * vr.width(); val r = vr.left + t.r * vr.width()
+        val tp0 = vr.top + t.t * vr.height(); val bt = vr.top + t.b * vr.height()
+        val bw = r - l
+        if (bw < 4f) return
+        // brilho no chão, embaixo do veículo
+        rect.set(l - bw * 0.12f, bt - bw * 0.07f, r + bw * 0.12f, bt + bw * 0.09f)
+        val g = glowPaint((bw * 0.12f).coerceIn(4f * dp, 16f * dp))
+        g.color = (col and 0x00FFFFFF) or (if (isLead) 0xE0000000.toInt() else 0x99000000.toInt())
+        cv.drawOval(rect, g)
+        // cantos finos (marcação discreta)
+        val c = (bw.coerceAtMost(bt - tp0) * 0.22f).coerceIn(5f * dp, 22f * dp)
+        p.style = Paint.Style.STROKE
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeWidth = (if (isLead) 3f else 2f) * dp
+        p.color = (col and 0x00FFFFFF) or 0xE6000000.toInt()
+        path.reset()
+        path.moveTo(l, tp0 + c); path.lineTo(l, tp0); path.lineTo(l + c, tp0)
+        path.moveTo(r - c, tp0); path.lineTo(r, tp0); path.lineTo(r, tp0 + c)
+        path.moveTo(l, bt - c); path.lineTo(l, bt); path.lineTo(l + c, bt)
+        path.moveTo(r - c, bt); path.lineTo(r, bt); path.lineTo(r, bt - c)
+        cv.drawPath(path, p)
+        p.strokeCap = Paint.Cap.BUTT
+        // distância numa etiqueta pequena
+        if (d < 40f && bw > 14f * dp) {
+            val label = "${d.roundToInt()} m"
             p.style = Paint.Style.FILL
-            p.color = (col and 0x00FFFFFF) or 0x30000000
-            cv.drawRoundRect(rect, r, r, p)
-            p.style = Paint.Style.STROKE
-            p.strokeWidth = 3f * dp
+            p.textSize = 13f * dp
+            p.isFakeBoldText = true
+            val tw = p.measureText(label)
+            val ph = 20f * dp
+            val cx = (l + r) / 2f
+            rect.set(cx - tw / 2f - 8f * dp, tp0 - ph - 6f * dp, cx + tw / 2f + 8f * dp, tp0 - 6f * dp)
+            p.color = 0xB3101418.toInt()
+            cv.drawRoundRect(rect, ph / 2f, ph / 2f, p)
             p.color = col
-            cv.drawRoundRect(rect, r, r, p)
-            if (d < 40f) {
+            p.textAlign = Paint.Align.CENTER
+            cv.drawText(label, cx, rect.centerY() + p.textSize * 0.36f, p)
+            p.isFakeBoldText = false
+        }
+        // pisca do outro veículo (experimental): bolinha âmbar piscando no canto do lado da seta
+        if ((t.blinkL || t.blinkR) && blinkOn()) {
+            val rr = (bw * 0.09f).coerceIn(5f * dp, 12f * dp)
+            val cy = tp0 + (bt - tp0) * 0.6f
+            for ((on, x) in listOf(t.blinkL to l, t.blinkR to r)) {
+                if (!on) continue
+                cv.drawCircle(x, cy, rr * 1.8f, glowPaint(rr).apply { color = 0xCCFFA000.toInt() })
                 p.style = Paint.Style.FILL
-                p.textAlign = Paint.Align.CENTER
-                p.textSize = 15f * dp
-                p.setShadowLayer(4f * dp, 0f, 0f, 0xCC000000.toInt())
-                cv.drawText("~${d.roundToInt()} m", rect.centerX(), rect.top - 6f * dp, p)
-                p.clearShadowLayer()
+                p.color = 0xFFFFC233.toInt()
+                cv.drawCircle(x, cy, rr, p)
             }
         }
+    }
+
+    /** Seu carro visto de trás (genérico, cinza metálico), com sombra e lanterna em barra. */
+    private fun drawEgoRear(cv: Canvas, cx: Float, bottom: Float, u: Float) {
+        // sombra no chão
+        rect.set(cx - 0.60f * u, bottom - 0.07f * u, cx + 0.60f * u, bottom + 0.06f * u)
+        cv.drawOval(rect, glowPaint(0.06f * u).apply { color = 0xCC000000.toInt() })
+        p.style = Paint.Style.FILL
+        // pneus
+        p.color = 0xFF15171A.toInt()
+        rect.set(cx - 0.49f * u, bottom - 0.17f * u, cx - 0.33f * u, bottom); cv.drawRoundRect(rect, 0.03f * u, 0.03f * u, p)
+        rect.set(cx + 0.33f * u, bottom - 0.17f * u, cx + 0.49f * u, bottom); cv.drawRoundRect(rect, 0.03f * u, 0.03f * u, p)
+        // cabine (vidro traseiro em trapézio)
+        val cb = bottom - 0.47f * u; val ct = bottom - 0.76f * u
+        path.reset()
+        path.moveTo(cx - 0.44f * u, cb)
+        path.lineTo(cx - 0.31f * u, ct + 0.02f * u)
+        path.quadTo(cx - 0.30f * u, ct, cx - 0.27f * u, ct)
+        path.lineTo(cx + 0.27f * u, ct)
+        path.quadTo(cx + 0.30f * u, ct, cx + 0.31f * u, ct + 0.02f * u)
+        path.lineTo(cx + 0.44f * u, cb)
+        path.close()
+        p.shader = LinearGradient(0f, ct, 0f, cb, 0xFFB9C0C8.toInt(), 0xFF7E8690.toInt(), Shader.TileMode.CLAMP)
+        cv.drawPath(path, p)
+        p.shader = null
+        path.reset()
+        path.moveTo(cx - 0.38f * u, cb - 0.01f * u)
+        path.lineTo(cx - 0.27f * u, ct + 0.04f * u)
+        path.lineTo(cx + 0.27f * u, ct + 0.04f * u)
+        path.lineTo(cx + 0.38f * u, cb - 0.01f * u)
+        path.close()
+        p.shader = LinearGradient(cx - 0.3f * u, ct, cx + 0.2f * u, cb, 0xFF4A5561.toInt(), 0xFF161A20.toInt(), Shader.TileMode.CLAMP)
+        cv.drawPath(path, p)
+        p.shader = null
+        // carroceria
+        rect.set(cx - 0.50f * u, bottom - 0.50f * u, cx + 0.50f * u, bottom - 0.08f * u)
+        p.shader = LinearGradient(0f, rect.top, 0f, rect.bottom, 0xFFDDE1E6.toInt(), 0xFF7B828B.toInt(), Shader.TileMode.CLAMP)
+        cv.drawRoundRect(rect, 0.10f * u, 0.10f * u, p)
+        p.shader = null
+        // reflexo na tampa do porta-malas
+        p.color = 0x55FFFFFF
+        rect.set(cx - 0.44f * u, bottom - 0.495f * u, cx + 0.44f * u, bottom - 0.475f * u)
+        cv.drawRoundRect(rect, 0.01f * u, 0.01f * u, p)
+        // para-choque
+        p.color = 0xFF2E3338.toInt()
+        rect.set(cx - 0.47f * u, bottom - 0.17f * u, cx + 0.47f * u, bottom - 0.08f * u)
+        cv.drawRoundRect(rect, 0.04f * u, 0.04f * u, p)
+        // lanterna em barra, com brilho
+        rect.set(cx - 0.47f * u, bottom - 0.385f * u, cx + 0.47f * u, bottom - 0.345f * u)
+        cv.drawRoundRect(rect, 0.02f * u, 0.02f * u, glowPaint(0.05f * u).apply { color = 0x99FF2A2A.toInt() })
+        p.color = 0xFFE8302A.toInt()
+        cv.drawRoundRect(rect, 0.02f * u, 0.02f * u, p)
+        p.color = 0xFFFF8A80.toInt()
+        rect.set(cx - 0.45f * u, bottom - 0.372f * u, cx + 0.45f * u, bottom - 0.362f * u)
+        cv.drawRect(rect, p)
+        // pisca âmbar nas pontas da lanterna
+        if (blinkOn()) {
+            if (turnLeft) blinker(cv, cx - 0.49f * u, bottom - 0.40f * u, cx - 0.27f * u, bottom - 0.33f * u, u)
+            if (turnRight) blinker(cv, cx + 0.27f * u, bottom - 0.40f * u, cx + 0.49f * u, bottom - 0.33f * u, u)
+        }
+    }
+
+    private fun blinker(cv: Canvas, l: Float, t: Float, r: Float, b: Float, u: Float) {
+        rect.set(l, t, r, b)
+        cv.drawRoundRect(rect, 0.02f * u, 0.02f * u, glowPaint(0.08f * u).apply { color = 0xDDFFA000.toInt() })
+        p.style = Paint.Style.FILL
+        p.color = 0xFFFFC233.toInt()
+        cv.drawRoundRect(rect, 0.02f * u, 0.02f * u, p)
+    }
+
+    // ---------------------------------------------------------------- luzes do painel
+
+    /** No alto, no meio: ◀ farol ▶ (setas verdes piscando, farol baixo verde, farol alto azul). */
+    private fun drawIndicators(cv: Canvas, w: Float) {
+        if (!turnLeft && !turnRight && !lowBeam && !highBeam) return
+        val s = 34f * dp
+        val cy = 36f * dp // alinhado com o selo "AO VIVO"
+        val cx = w / 2f
+        val gap = 62f * dp
+        rect.set(cx - gap - s / 2f - 14f * dp, cy - s / 2f - 7f * dp, cx + gap + s / 2f + 14f * dp, cy + s / 2f + 7f * dp)
+        p.style = Paint.Style.FILL
+        p.color = 0xB3101418.toInt()
+        cv.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, p)
+        val on = blinkOn()
+        drawArrow(cv, cx - gap, cy, s, left = true, active = turnLeft, lit = on)
+        drawArrow(cv, cx + gap, cy, s, left = false, active = turnRight, lit = on)
+        if (highBeam || lowBeam) drawBeam(cv, cx, cy, s * 0.95f, high = highBeam)
+    }
+
+    private fun drawArrow(cv: Canvas, cx: Float, cy: Float, size: Float, left: Boolean, active: Boolean, lit: Boolean) {
+        val k = size / 24f
+        val x0 = cx - size / 2f
+        val y0 = cy - size / 2f
+        val pts = if (left) ARROW_LEFT else ARROW_RIGHT
+        path.reset()
+        path.moveTo(x0 + pts[0] * k, y0 + pts[1] * k)
+        for (i in 2 until pts.size step 2) path.lineTo(x0 + pts[i] * k, y0 + pts[i + 1] * k)
+        path.close()
+        val on = active && lit
+        if (on) cv.drawPath(path, glowPaint(7f * dp).apply { color = 0xCC34C759.toInt() })
+        p.style = Paint.Style.FILL
+        p.color = when {
+            on -> 0xFF34C759.toInt()
+            active -> 0x6634C759      // apagado no meio da piscada
+            else -> 0x26FFFFFF        // seta desligada: só o contorno do lugar
+        }
+        cv.drawPath(path, p)
+    }
+
+    private fun drawBeam(cv: Canvas, cx: Float, cy: Float, size: Float, high: Boolean) {
+        val k = size / 24f
+        val x0 = cx - size / 2f
+        val y0 = cy - size / 2f
+        val col = if (high) 0xFF4C8DFF.toInt() else 0xFF34C759.toInt()
+        path.reset()
+        path.moveTo(x0 + 13f * k, y0 + 5f * k)
+        path.cubicTo(x0 + 18.5f * k, y0 + 5f * k, x0 + 22.5f * k, y0 + 8f * k, x0 + 22.5f * k, y0 + 12f * k)
+        path.cubicTo(x0 + 22.5f * k, y0 + 16f * k, x0 + 18.5f * k, y0 + 19f * k, x0 + 13f * k, y0 + 19f * k)
+        path.close()
+        p.style = Paint.Style.FILL
+        p.color = col
+        cv.drawPath(path, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 2.2f * k
+        p.strokeCap = Paint.Cap.ROUND
+        for (i in 0..2) {
+            if (high) {
+                val yy = y0 + (8f + 4f * i) * k
+                cv.drawLine(x0 + 10f * k, yy, x0 + 3f * k, yy, p)
+            } else {
+                val yy = y0 + (7f + 4f * i) * k
+                cv.drawLine(x0 + 10f * k, yy, x0 + 3f * k, yy + 3f * k, p)
+            }
+        }
+        p.strokeCap = Paint.Cap.BUTT
+        p.style = Paint.Style.FILL
     }
 
     // ---------------------------------------------------------------- textos e botão
 
     private fun drawHud(cv: Canvas, w: Float, h: Float) {
-        val onVideo = style == Style.VIDEO
-        val main = if (onVideo) 0xFFFFFFFF.toInt() else 0xFF202124.toInt()
-        val muted = if (onVideo) 0xDDFFFFFF.toInt() else 0xFF5F6368.toInt()
-        if (onVideo) p.setShadowLayer(5f * dp, 0f, 0f, 0xCC000000.toInt())
+        val onVideo = style == Style.VIDEO || scene3d // fundo escuro: painel claro
         p.style = Paint.Style.FILL
         p.textAlign = Paint.Align.LEFT
-
-        // velocidade (GPS do tablet), abaixo do selo "AO VIVO"
         val left = 22f * dp
-        p.color = main
-        p.textSize = 54f * dp
-        p.isFakeBoldText = true
         // parado, o GPS oscila entre 0 e 2 km/h: abaixo de 3 mostra 0
         val speedText = speedKmh?.let { if (it < 3f) "0" else it.roundToInt().toString() } ?: "--"
-        val base = 72f * dp + p.textSize * 0.82f
-        cv.drawText(speedText, left, base, p)
-        p.isFakeBoldText = false
-        p.color = muted
-        p.textSize = 15f * dp
-        cv.drawText(if (speedKmh == null) "km/h • sem GPS" else "km/h", left + 2f * dp, base + 22f * dp, p)
 
-        // legenda discreta embaixo à esquerda
-        p.textSize = 12f * dp
-        cv.drawText("Simulação • posições estimadas • $fps det/s", left, h - 22f * dp, p)
-        p.clearShadowLayer()
+        if (onVideo) {
+            drawVideoCard(cv, h, speedText)
+        } else {
+            // velocidade (GPS do tablet), abaixo do selo "AO VIVO"
+            p.color = 0xFF202124.toInt()
+            p.textSize = 54f * dp
+            p.isFakeBoldText = true
+            val base = 72f * dp + p.textSize * 0.82f
+            cv.drawText(speedText, left, base, p)
+            p.isFakeBoldText = false
+            p.color = 0xFF5F6368.toInt()
+            p.textSize = 15f * dp
+            cv.drawText(if (speedKmh == null) "km/h • sem GPS" else "km/h", left + 2f * dp, base + 22f * dp, p)
+
+            // legenda discreta embaixo à esquerda
+            p.textSize = 12f * dp
+            cv.drawText("Simulação • posições estimadas • $fps det/s", left, h - 22f * dp, p)
+        }
 
         // botão para trocar o estilo, embaixo à direita
-        val label = if (onVideo) "Ver cena 3D" else "Ver sobre o vídeo"
+        val label = if (style == Style.VIDEO) "Ver cena 3D" else "Ver sobre o vídeo"
         p.textSize = 15f * dp
         p.isFakeBoldText = true
         val tw = p.measureText(label)
         val bh = 44f * dp
-        toggleRect.set(w - tw - 40f * dp - 16f * dp, h - bh - 14f * dp, w - 16f * dp, h - 14f * dp)
+        val yb = h - 14f * dp - toggleLift
+        toggleRect.set(w - tw - 40f * dp - 16f * dp, yb - bh, w - 16f * dp, yb)
         p.color = if (onVideo) 0xCC202124.toInt() else 0xFF202124.toInt()
         cv.drawRoundRect(toggleRect, bh / 2f, bh / 2f, p)
         p.color = 0xFFFFFFFF.toInt()
         p.textAlign = Paint.Align.CENTER
         cv.drawText(label, toggleRect.centerX(), toggleRect.centerY() + p.textSize * 0.35f, p)
+        // botão dia/noite, à esquerda do de estilo (só na cena 3D)
+        val dl = dayLabel
+        if (scene3d && dl != null) {
+            val dw = p.measureText(dl) + 40f * dp
+            dayRect.set(toggleRect.left - 10f * dp - dw, toggleRect.top, toggleRect.left - 10f * dp, toggleRect.bottom)
+            p.color = 0xCC202124.toInt()
+            cv.drawRoundRect(dayRect, bh / 2f, bh / 2f, p)
+            p.color = 0xFFFFFFFF.toInt()
+            cv.drawText(dl, dayRect.centerX(), dayRect.centerY() + p.textSize * 0.35f, p)
+        }
         p.isFakeBoldText = false
+    }
+
+    /** Cartão escuro translúcido embaixo à esquerda: velocidade, hora e o que está sendo visto. */
+    private fun drawVideoCard(cv: Canvas, h: Float, speedText: String) {
+        val cw = 230f * dp
+        val ch = 92f * dp
+        val x0 = 16f * dp
+        val y1 = h - 14f * dp
+        rect.set(x0, y1 - ch, x0 + cw, y1)
+        p.style = Paint.Style.FILL
+        p.color = 0xB8121519.toInt()
+        cv.drawRoundRect(rect, 18f * dp, 18f * dp, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 1f * dp
+        p.color = 0x33FFFFFF
+        cv.drawRoundRect(rect, 18f * dp, 18f * dp, p)
+        p.style = Paint.Style.FILL
+        p.textAlign = Paint.Align.LEFT
+
+        val pad = 16f * dp
+        p.color = 0xFFFFFFFF.toInt()
+        p.textSize = 40f * dp
+        p.isFakeBoldText = true
+        val base = rect.top + pad + p.textSize * 0.78f
+        cv.drawText(speedText, x0 + pad, base, p)
+        val sw = p.measureText(speedText)
+        p.isFakeBoldText = false
+        p.textSize = 14f * dp
+        p.color = 0xCCFFFFFF.toInt()
+        cv.drawText(if (speedKmh == null) "km/h • sem GPS" else "km/h", x0 + pad + sw + 8f * dp, base, p)
+        // hora no canto direito do cartão
+        p.textAlign = Paint.Align.RIGHT
+        p.textSize = 15f * dp
+        p.color = 0xFFFFFFFF.toInt()
+        cv.drawText(clock.format(java.util.Date()), rect.right - pad, rect.top + pad + 12f * dp, p)
+        p.textAlign = Paint.Align.LEFT
+        p.textSize = 12f * dp
+        p.color = 0x99FFFFFF.toInt()
+        val n = tracks.size
+        cv.drawText(
+            "${if (n == 1) "1 objeto" else "$n objetos"} • $fps det/s • ${mapStatus ?: "estimativa"}",
+            x0 + pad, rect.bottom - pad + 2f * dp, p,
+        )
     }
 
     /** Mensagem no meio da tela, quebrando linha para caber (erros podem ser longos). */
@@ -464,6 +837,27 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
     }
 
     companion object {
+        private var trackIds = 0
+
+        /** Meio período do pisca: ~0,36 s aceso e ~0,36 s apagado, como o do Ka (medido na rede). */
+        const val BLINK_MS = 360L
+
+        /** Fase do pisca, a mesma para a Estrada e para o cartão do carro. */
+        fun blinkOn() = (android.os.SystemClock.uptimeMillis() / BLINK_MS) % 2 == 0L
+
+        /** Setas no desenho de 24x24 (mesmo formato dos ícones ic_turn_left/right). */
+        private val ARROW_LEFT = floatArrayOf(10f, 3.5f, 1.5f, 12f, 10f, 20.5f, 10f, 15.2f, 22.5f, 15.2f, 22.5f, 8.8f, 10f, 8.8f)
+        private val ARROW_RIGHT = floatArrayOf(14f, 3.5f, 22.5f, 12f, 14f, 20.5f, 14f, 15.2f, 1.5f, 15.2f, 1.5f, 8.8f, 14f, 8.8f)
+
+        /**
+         * Escala do vídeo na tela. [fill] = preenche, mas corta no máximo ~25% de cada lado
+         * (no cartão quase quadrado da tela normal, preencher tudo cortaria as faixas do lado).
+         */
+        fun videoScale(srcW: Int, srcH: Int, dstW: Float, dstH: Float, fill: Boolean): Float {
+            val fit = minOf(dstW / srcW, dstH / srcH)
+            return if (fill) minOf(maxOf(dstW / srcW, dstH / srcH), fit * 1.33f) else fit
+        }
+
         /** Linha do horizonte na imagem da câmera (fração da altura). Estimativa para câmera de para-brisa. */
         const val HORIZON = 0.45f
         /** Meia largura do campo de visão em "metros por metro" (grande-angular). Estimativa. */

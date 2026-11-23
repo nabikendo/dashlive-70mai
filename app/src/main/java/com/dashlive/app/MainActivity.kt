@@ -101,12 +101,23 @@ class MainActivity : AppCompatActivity() {
     private val detectTick = object : Runnable {
         override fun run() {
             if (!roadMode) return
+            if (SystemClock.elapsedRealtime() - dayCheckedAt > 60_000) updateDay()
+            b.roadView.mapStatus = b.road3d.streetInfo ?: mapState
+            // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
+            if (roadDemo && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
             // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
-            if (gpsOn && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+            if (gpsOn && !obdFresh && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
             if (roadDemo) {
+                val t = SystemClock.uptimeMillis() / 1000f
                 b.roadView.message = null
-                b.roadView.update(demoScene(SystemClock.uptimeMillis() / 1000f))
+                b.roadView.update(demoScene(t))
                 if (b.roadView.speedKmh == null) b.roadView.speedKmh = 62f
+                // setas e faróis de mentira: esquerda 4 s, direita 4 s, nenhuma 4 s; farol alto a cada 12 s
+                val c = t % 12f
+                b.roadView.turnLeft = c < 4f
+                b.roadView.turnRight = c >= 4f && c < 8f
+                b.roadView.highBeam = t % 24f >= 12f
+                b.roadView.lowBeam = !b.roadView.highBeam
             } else {
                 grabAndDetect()
             }
@@ -198,17 +209,43 @@ class MainActivity : AppCompatActivity() {
         b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnRoad.setOnClickListener { toggleRoad() }
         roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
+        // teste da rua do mapa sem sair do lugar: --ef mapLat -23.56 --ef mapLon -46.65 --ef mapBearing 310
+        fakeMap = roadDemo && intent.hasExtra("mapLat")
+        if (fakeMap) {
+            val la = intent.getFloatExtra("mapLat", 0f).toDouble()
+            val lo = intent.getFloatExtra("mapLon", 0f).toDouble()
+            b.road3d.onLocation(la, lo, intent.getFloatExtra("mapBearing", 0f))
+            feedMap(la, lo)
+        }
         b.roadView.style = if (prefs.getString("roadStyle", "scene") == "video") RoadView.Style.VIDEO else RoadView.Style.SCENE
-        b.roadView.onStyleChange = { s -> prefs.edit().putString("roadStyle", if (s == RoadView.Style.VIDEO) "video" else "scene").apply() }
+        b.roadView.onStyleChange = { s ->
+            prefs.edit().putString("roadStyle", if (s == RoadView.Style.VIDEO) "video" else "scene").apply()
+            fitVideo()
+            updateRoad3d()
+        }
+        b.road3d.source = b.roadView
+        b.roadView.onDayButton = {
+            val next = when (prefs.getString("roadDay", "auto")) { "auto" -> "day"; "day" -> "night"; else -> "auto" }
+            prefs.edit().putString("roadDay", next).apply()
+            updateDay()
+        }
+        b.road3d.onError = { msg ->
+            road3dOk = false
+            updateRoad3d()
+            toast("A Estrada 3D não abriu neste aparelho ($msg). Usando a cena desenhada.")
+        }
         b.btnDiag.setOnClickListener { runDiagnostics() }
         b.btnUpdate.setOnClickListener { checkForUpdate(manual = true) }
         b.btnUpdateNow.setOnClickListener { onUpdateButton() }
+        b.carCard.setOnClickListener { showObdDialog() }
+        if (obdAddr.isNotBlank()) showCarStatus(obdName, false)
         refreshInfo()
         handler.post { showLastCrash() }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        b.road3d.destroy()
         roadDetector?.close()
         roadDetector = null
         detectExec.shutdown()
@@ -216,8 +253,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (roadMode && !rearLens) handler.post(detectTick)
+        if (roadMode && (!rearLens || roadDemo)) handler.post(detectTick)
         if (roadMode) startSpeed()
+        updateRoad3d()
+        startObd()
         bindToCameraWifi()
         if (pendingRelease == null) checkForUpdate(manual = false)
     }
@@ -227,6 +266,8 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(null)
         releasePlayer()
         stopSpeed()
+        stopObd()
+        b.road3d.stop()
         wifiCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
         wifiCallback = null
         cm.bindProcessToNetwork(null)
@@ -541,15 +582,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Mantém a proporção do vídeo dentro do cartão (barras pretas se precisar). */
-    private fun fitVideo() = fit(b.textureView, videoW, videoH)
+    /** Na Estrada "sobre o vídeo" o vídeo preenche o cartão (o RoadView usa a mesma regra). */
+    private fun fitVideo() = fit(b.textureView, videoW, videoH, cover = roadMode && b.roadView.style == RoadView.Style.VIDEO)
 
     private fun fitRear() = fit(b.rearTexture, rearW, rearH)
 
-    private fun fit(v: TextureView, srcW: Int, srcH: Int) {
+    private fun fit(v: TextureView, srcW: Int, srcH: Int, cover: Boolean = false) {
         if (srcW <= 0 || srcH <= 0 || v.width == 0 || v.height == 0) return
         val vw = v.width.toFloat()
         val vh = v.height.toFloat()
-        val scale = minOf(vw / srcW, vh / srcH)
+        val scale = RoadView.videoScale(srcW, srcH, vw, vh, cover)
         val m = Matrix()
         m.setScale(srcW * scale / vw, srcH * scale / vh, vw / 2, vh / 2)
         v.setTransform(m)
@@ -647,6 +689,7 @@ class MainActivity : AppCompatActivity() {
         b.dock.visibility = v
         b.mainLabel.visibility = if (on) View.GONE else View.VISIBLE
         b.btnExitFs.visibility = if (on) View.VISIBLE else View.GONE
+        b.roadView.toggleLift = if (on) 72f * resources.displayMetrics.density else 0f
         val pad = if (on) 0 else (12 * resources.displayMetrics.density).toInt()
         b.main.setPadding(pad, pad, pad, pad)
         b.videoCard.setBackgroundColor(getColor(R.color.video_bg))
@@ -857,6 +900,8 @@ class MainActivity : AppCompatActivity() {
         b.lblRoad.text = if (roadMode) "Vídeo" else "Estrada"
         handler.removeCallbacks(detectTick)
         b.roadView.clear()
+        fitVideo()
+        updateRoad3d()
         if (roadMode) {
             dumpNextFrame = true
             b.roadView.message = when {
@@ -864,10 +909,82 @@ class MainActivity : AppCompatActivity() {
                 useNative -> "Procurando veículos…"
                 else -> "A simulação precisa do player nativo"
             }
-            if (!rearLens) handler.post(detectTick)
+            if (!rearLens || roadDemo) handler.post(detectTick)
             startSpeed()
         } else {
             stopSpeed()
+        }
+    }
+
+    /** A Estrada 3D (Filament) abriu neste aparelho; se falhar, fica a cena desenhada em 2D. */
+    private var road3dOk = true
+
+    // ---------------------------------------------------------------- rua real (OpenStreetMap)
+
+    private var mapLat = Double.NaN
+    private var mapLon = Double.NaN
+    private var mapFetching = false
+    private var mapTriedAt = 0L
+    /** Situação do mapa para o painel quando ainda não há rua encaixada. */
+    private var mapState: String? = null
+    /** Teste com posição de mentira (o GPS de verdade é ignorado). */
+    private var fakeMap = false
+
+    /**
+     * Pede as ruas em volta quando o carro sai da área já baixada (raio de 450 m; pede de novo a
+     * 250 m do centro). No máximo uma consulta a cada 15 s.
+     */
+    private fun feedMap(lat: Double, lon: Double) {
+        if (mapFetching) return
+        if (!mapLat.isNaN()) {
+            val d = FloatArray(1)
+            Location.distanceBetween(mapLat, mapLon, lat, lon, d)
+            if (d[0] < 250f) return
+        }
+        if (SystemClock.elapsedRealtime() - mapTriedAt < 15_000) return
+        mapTriedAt = SystemClock.elapsedRealtime()
+        mapFetching = true
+        if (mapLat.isNaN()) mapState = "baixando o mapa…"
+        Thread {
+            val r = runCatching { OsmClient.load(this, cm, lat, lon) }
+            runOnUiThread {
+                mapFetching = false
+                r.onSuccess { (map, online) ->
+                    mapLat = lat; mapLon = lon
+                    mapState = if (online) "mapa ok" else "mapa guardado"
+                    b.road3d.setMap(map)
+                }.onFailure { mapState = "mapa: ${it.message}" }
+            }
+        }.start()
+    }
+
+    /** Estrada ligada no estilo "cena": mostra o 3D por baixo do painel do RoadView. */
+    private fun updateRoad3d() {
+        val on = road3dOk && roadMode && b.roadView.style == RoadView.Style.SCENE
+        b.road3d.visibility = if (on) View.VISIBLE else View.GONE
+        b.roadView.scene3d = on
+        if (on) { updateDay(); b.road3d.start() } else b.road3d.stop()
+    }
+
+    private var dayCheckedAt = 0L
+
+    /**
+     * Dia ou noite na cena 3D: "auto" usa a altura do sol na última posição do GPS (sem posição
+     * ainda: das 6h às 18h); "day"/"night" forçam pelo botão da Estrada.
+     */
+    private fun updateDay() {
+        dayCheckedAt = SystemClock.elapsedRealtime()
+        val mode = prefs.getString("roadDay", "auto")
+        val lat = prefs.getFloat("lastLat", Float.NaN)
+        val lon = prefs.getFloat("lastLon", Float.NaN)
+        val autoDay = if (!lat.isNaN() && !lon.isNaN()) Sun.isDay(lat.toDouble(), lon.toDouble(), System.currentTimeMillis())
+        else java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) in 6..17
+        val day = when (mode) { "day" -> true; "night" -> false; else -> autoDay }
+        b.road3d.day = day
+        b.roadView.dayLabel = when (mode) {
+            "day" -> "Dia ☀"
+            "night" -> "Noite ☾"
+            else -> if (day) "Auto ☀" else "Auto ☾"
         }
     }
 
@@ -890,7 +1007,10 @@ class MainActivity : AppCompatActivity() {
         return listOf(
             at(Kind.CAR, 0.2f, 14f + 4f * wave, 1.8f, 1.5f),
             at(Kind.TRUCK, -3.6f, 26f, 2.5f, 3.4f),
-            at(Kind.CAR, 3.4f, 9f - 2f * wave, 1.8f, 1.5f),
+            // este carro "dá seta para a direita" (âmbar acende e apaga a cada ~0,37 s)
+            at(Kind.CAR, 3.4f, 9f - 2f * wave, 1.8f, 1.5f).apply {
+                ambR = if ((SystemClock.uptimeMillis() / 370) % 2 == 0L) 0.08f else 0.005f
+            },
             at(Kind.BUS, 3.7f, 38f, 2.5f, 3.1f),
             at(Kind.MOTORCYCLE, -3.3f, 11f + 3f * wave, 0.8f, 1.5f),
             at(Kind.PERSON, 6.6f, 7f, 0.6f, 1.7f),
@@ -904,8 +1024,18 @@ class MainActivity : AppCompatActivity() {
     private var lastFixAt = 0L
     private val gpsListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
+            // guarda a posição (dia/noite automático e, depois, o mapa) no máximo 1x por minuto
+            if (SystemClock.elapsedRealtime() - lastFixAt > 60_000 || prefs.getFloat("lastLat", Float.NaN).isNaN()) {
+                prefs.edit().putFloat("lastLat", loc.latitude.toFloat()).putFloat("lastLon", loc.longitude.toFloat()).apply()
+            }
             lastFixAt = SystemClock.elapsedRealtime()
-            if (loc.hasSpeed()) b.roadView.speedKmh = loc.speed * 3.6f
+            // rua real na Estrada 3D: posição (rumo só andando; parado o GPS inventa direção)
+            if (!fakeMap) {
+                b.road3d.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null)
+                feedMap(loc.latitude, loc.longitude)
+            }
+            // com o OBD2 conectado, a velocidade do carro tem prioridade (mais precisa e sem atraso)
+            if (loc.hasSpeed() && !obdFresh && !fakeMap) b.roadView.speedKmh = loc.speed * 3.6f
         }
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) { b.roadView.speedKmh = null }
@@ -942,6 +1072,234 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQ_LOCATION && roadMode && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
             startSpeed()
         }
+        if (requestCode == REQ_BT) {
+            if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) showObdDialog()
+            else toast("Sem a permissão de Bluetooth o DashLive não consegue falar com o adaptador OBD2.")
+        }
+    }
+
+    // ---------------------------------------------------------------- carro (OBD2)
+
+    private var obd: ObdManager? = null
+    /** Hora da última velocidade do OBD; enquanto recente, ela tem prioridade sobre o GPS. */
+    private var obdSpeedAt = 0L
+    private val obdFresh: Boolean
+        get() = SystemClock.elapsedRealtime() - obdSpeedAt < 3000
+    private var obdAddr: String
+        get() = prefs.getString("obdAddr", "")!!
+        set(v) = prefs.edit().putString("obdAddr", v).apply()
+    private var obdName: String
+        get() = prefs.getString("obdName", "")!!
+        set(v) = prefs.edit().putString("obdName", v).apply()
+
+    private fun hasBtPermission() = Build.VERSION.SDK_INT < 31 ||
+        checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+
+    private fun startObd() {
+        if (obd != null || obdAddr.isBlank()) return
+        if (!hasBtPermission()) { showCarStatus("Toque para permitir o Bluetooth", false); return }
+        obd = ObdManager(
+            this, obdAddr,
+            onState = { text, ok -> runOnUiThread { if (obd != null) showCarStatus(if (ok) "$obdName • conectado" else text, ok) } },
+            onData = { d -> runOnUiThread { if (obd != null) showCarData(d) } },
+        ).also { it.start() }
+    }
+
+    private fun stopObd() {
+        obd?.stop()
+        obd = null
+        obdSpeedAt = 0L
+        handler.removeCallbacks(blinkTick)
+        showLights(left = false, right = false, low = false, high = false)
+        b.carLights.visibility = View.GONE
+        b.roadView.lightsKnown = false
+    }
+
+    private fun showCarStatus(text: String, ok: Boolean) {
+        b.carStatus.text = text
+        b.carDot.setBackgroundResource(if (ok) R.drawable.bg_ok_dot else R.drawable.bg_warn_dot)
+        if (!ok) {
+            b.carValues.visibility = View.GONE
+            b.carVolts.text = ""
+            b.carLights.visibility = View.GONE
+            showLights(left = false, right = false, low = false, high = false)
+            b.roadView.lightsKnown = false
+        }
+    }
+
+    private fun showCarData(d: ObdManager.Data) {
+        b.carValues.visibility = View.VISIBLE
+        b.carSpeed.text = d.speed?.toString() ?: "--"
+        b.carRpm.text = d.rpm?.toString() ?: "--"
+        b.carTemp.text = d.coolant?.toString() ?: "--"
+        b.carFuel.text = d.fuel?.toString() ?: "--"
+        b.carVolts.text = d.volts?.let { "%.1f V".format(it) } ?: ""
+        if (d.speed != null) {
+            obdSpeedAt = SystemClock.elapsedRealtime()
+            if (roadMode) b.roadView.speedKmh = d.speed.toFloat()
+        }
+        // Setas e faróis (Ford Ka). A 0x3B3 chega ~2x/s e manda no liga/desliga; a 0x3C3 (a cada ~3 s)
+        // só diz se é farol baixo ou alto. Mensagem velha (escuta perdida, ignição desligada) = apagado.
+        val now = SystemClock.elapsedRealtime()
+        val bodyOk = d.bodyAt > 0 && now - d.bodyAt < 3000
+        val beamsOk = d.beamsAt > 0 && now - d.beamsAt < 10_000
+        val high = beamsOk && d.highBeam && (!bodyOk || d.lights)
+        val low = !high && (if (bodyOk) d.lights else beamsOk && d.lowBeam)
+        b.carLights.visibility = if (d.bodyAt > 0 || d.beamsAt > 0) View.VISIBLE else View.GONE
+        b.roadView.lightsKnown = bodyOk || beamsOk
+        showLights(bodyOk && d.left, bodyOk && d.right, low, high)
+    }
+
+    private var turnL = false
+    private var turnR = false
+
+    private fun showLights(left: Boolean, right: Boolean, low: Boolean, high: Boolean) {
+        turnL = left
+        turnR = right
+        b.carLowBeam.alpha = if (low) 1f else LIGHT_OFF
+        b.carHighBeam.alpha = if (high) 1f else LIGHT_OFF
+        if (!roadDemo) {
+            b.roadView.turnLeft = left
+            b.roadView.turnRight = right
+            b.roadView.lowBeam = low
+            b.roadView.highBeam = high
+        }
+        blinkTick.run()
+    }
+
+    /** Pisca das setas no cartão, no ritmo do carro (o RoadView pisca no mesmo relógio). */
+    private val blinkTick = object : Runnable {
+        override fun run() {
+            handler.removeCallbacks(this)
+            val on = RoadView.blinkOn()
+            b.carTurnLeft.alpha = if (turnL && on) 1f else LIGHT_OFF
+            b.carTurnRight.alpha = if (turnR && on) 1f else LIGHT_OFF
+            if (turnL || turnR) handler.postDelayed(this, 60)
+        }
+    }
+
+    /** Toque no cartão "Carro": escolher o adaptador pareado, descobrir sinais ou esquecer. */
+    private fun showObdDialog() {
+        if (!hasBtPermission()) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), REQ_BT)
+            return
+        }
+        val bt = getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter
+        if (bt == null) { toast("Este tablet não tem Bluetooth"); return }
+        if (!bt.isEnabled) { toast("Ligue o Bluetooth do tablet"); openBtSettings(); return }
+        fun looksObd(n: String?) = n != null && Regex("OBD|ELM|V-?LINK|VGATE|KONNWEI", RegexOption.IGNORE_CASE).containsMatchIn(n)
+        val devices = runCatching { bt.bondedDevices.toList() }.getOrDefault(emptyList())
+            .sortedByDescending { looksObd(it.name) }
+        val names = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+        if (obdAddr.isNotBlank() && obd?.connected != true) {
+            // depois de algumas falhas as tentativas ficam espaçadas (até 2 min): isto tenta já
+            names += "Tentar conectar agora ($obdName)"
+            actions += { stopObd(); startObd() }
+        }
+        for (d in devices) {
+            val n = d.name ?: d.address
+            names += if (d.address == obdAddr) "✓  $n" else n
+            actions += {
+                obdAddr = d.address
+                obdName = n
+                stopObd()
+                startObd()
+            }
+        }
+        names += "Parear um adaptador novo…"
+        actions += {
+            toast("Pareie o adaptador (costuma aparecer como OBDII; senha 1234 ou 0000) e volte aqui.")
+            openBtSettings()
+        }
+        if (obd?.connected == true) {
+            names += "Descobrir sinais (seta, farol)…"
+            actions += { showSniffDialog() }
+        }
+        if (obdAddr.isNotBlank()) {
+            names += "Esquecer o adaptador"
+            actions += {
+                stopObd()
+                obdAddr = ""; obdName = ""
+                showCarStatus("Toque para escolher o adaptador", false)
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Adaptador OBD2 (ELM327) pareado")
+            .setItems(names.toTypedArray()) { _, i -> actions[i]() }
+            .setNegativeButton("Fechar", null)
+            .show()
+    }
+
+    private fun openBtSettings() {
+        runCatching { startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) }
+    }
+
+    /**
+     * Seta e farol não fazem parte do OBD2 padrão. Este modo grava 60 s de tudo o que passa na rede
+     * do carro enquanto a pessoa liga seta/farol na ordem pedida; depois o arquivo é analisado para
+     * achar quais mensagens mudam (Ford: pode estar só na rede MS-CAN, que o ELM327 comum não alcança).
+     */
+    private fun showSniffDialog() {
+        val o = obd ?: return
+        val steps = listOf(
+            Triple(0, "parado", "Carro ligado e parado.\nNão mexa em nada."),
+            Triple(12, "seta_esq", "AGORA: ligue a SETA DA ESQUERDA"),
+            Triple(24, "seta_dir", "AGORA: desligue a seta e ligue a SETA DA DIREITA"),
+            Triple(36, "farol_baixo", "AGORA: desligue a seta e ligue o FAROL BAIXO"),
+            Triple(48, "farol_alto", "AGORA: ligue o FAROL ALTO"),
+            Triple(60, "desligado", "AGORA: desligue os faróis.\nNão mexa em mais nada."),
+        )
+        val total = 72
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        val tv = android.widget.TextView(this).apply {
+            textSize = 22f
+            setTextColor(getColor(R.color.text))
+            setPadding(pad, pad, pad, pad)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Descobrir sinais do carro")
+            .setView(tv)
+            .setNegativeButton("Fechar", null)
+            .setCancelable(false)
+            .show()
+        var done = false
+        val file = File(getExternalFilesDir(null), "obd_sinais.txt")
+        val t0 = SystemClock.elapsedRealtime()
+        o.sniffPhase = steps[0].second
+        o.recordSignals(file, total) { msg ->
+            runOnUiThread {
+                done = true
+                tv.textSize = 16f
+                tv.text = "Pronto!\n$msg\n\nCom o tablet no PC, o Claude lê esse arquivo e procura a seta e o farol."
+            }
+        }
+        // bipe a cada passo novo: com a mão na alavanca não dá para ficar olhando a tela
+        val beeper = runCatching {
+            android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 90)
+        }.getOrNull()
+        var lastStep = -1
+        val tick = object : Runnable {
+            override fun run() {
+                if (done || !dlg.isShowing) { beeper?.release(); return }
+                val s = ((SystemClock.elapsedRealtime() - t0) / 1000).toInt()
+                val i = steps.indexOfLast { it.first <= s }
+                val step = steps[i]
+                if (i != lastStep && s < total) {
+                    if (lastStep >= 0) beeper?.startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 250)
+                    lastStep = i
+                }
+                o.sniffPhase = step.second
+                val next = steps.getOrNull(i + 1)
+                tv.text = when {
+                    s >= total -> "Salvando…"
+                    next != null -> "Passo ${i + 1} de ${steps.size}\n\n${step.third}\n\nPróximo passo em ${next.first - s} s"
+                    else -> "Passo ${i + 1} de ${steps.size}\n\n${step.third}\n\nTermina em ${total - s} s"
+                }
+                handler.postDelayed(this, 250)
+            }
+        }
+        handler.post(tick)
     }
 
     /** Pega um quadro do vídeo e manda o detector olhar, sem travar a tela. */
@@ -1002,6 +1360,9 @@ class MainActivity : AppCompatActivity() {
         private val REAR = Any()
         private const val HEADUNIT_PKG = "com.andrerinas.headunitrevived"
         private const val REQ_LOCATION = 42
+        private const val REQ_BT = 43
+        /** Transparência de uma luz do painel apagada. */
+        private const val LIGHT_OFF = 0.15f
 
         /** Todos os caminhos de vídeo que o app oficial da 70mai conhece. */
         private val SOURCES = listOf(

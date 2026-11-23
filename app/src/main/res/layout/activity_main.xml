@@ -173,6 +173,13 @@
                 app:surface_type="texture_view"
                 app:use_controller="false" />
 
+            <!-- Estrada 3D noturna (Filament); o RoadView desenha o painel por cima -->
+            <com.dashlive.app.Road3DView
+                android:id="@+id/road3d"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
             <com.dashlive.app.RoadView
                 android:id="@+id/roadView"
                 android:layout_width="match_parent"
@@ -400,6 +407,123 @@
                             style="@style/InfoValue" />
                     </LinearLayout>
 
+            </LinearLayout>
+
+            <!-- Carro (OBD2): toque para escolher o adaptador -->
+            <LinearLayout
+                android:id="@+id/carCard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_card"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="Carro (OBD2)"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/carDot"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
+                        android:background="@drawable/bg_warn_dot" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="Carro (OBD2)"
+                        android:textColor="@color/text"
+                        android:textSize="16sp" />
+
+                    <TextView
+                        android:id="@+id/carVolts"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_muted"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/carStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Toque para escolher o adaptador"
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:id="@+id/carValues"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <LinearLayout style="@style/CarCell">
+                        <TextView android:id="@+id/carSpeed" style="@style/CarValue" />
+                        <TextView style="@style/CarUnit" android:text="km/h" />
+                    </LinearLayout>
+
+                    <LinearLayout style="@style/CarCell">
+                        <TextView android:id="@+id/carRpm" style="@style/CarValue" />
+                        <TextView style="@style/CarUnit" android:text="rpm" />
+                    </LinearLayout>
+
+                    <LinearLayout style="@style/CarCell">
+                        <TextView android:id="@+id/carTemp" style="@style/CarValue" />
+                        <TextView style="@style/CarUnit" android:text="°C motor" />
+                    </LinearLayout>
+
+                    <LinearLayout style="@style/CarCell">
+                        <TextView android:id="@+id/carFuel" style="@style/CarValue" />
+                        <TextView style="@style/CarUnit" android:text="% tanque" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Setas e faróis (Ford Ka: mensagens 0x3B3/0x3C3); apagados = 15% -->
+                <LinearLayout
+                    android:id="@+id/carLights"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <ImageView
+                        android:id="@+id/carTurnLeft"
+                        style="@style/CarLight"
+                        android:src="@drawable/ic_turn_left"
+                        android:tint="@color/light_turn" />
+
+                    <ImageView
+                        android:id="@+id/carLowBeam"
+                        style="@style/CarLight"
+                        android:src="@drawable/ic_beam_low"
+                        android:tint="@color/light_turn" />
+
+                    <ImageView
+                        android:id="@+id/carHighBeam"
+                        style="@style/CarLight"
+                        android:src="@drawable/ic_beam_high"
+                        android:tint="@color/light_high" />
+
+                    <ImageView
+                        android:id="@+id/carTurnRight"
+                        style="@style/CarLight"
+                        android:src="@drawable/ic_turn_right"
+                        android:tint="@color/light_turn" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- Aviso de atualização -->
