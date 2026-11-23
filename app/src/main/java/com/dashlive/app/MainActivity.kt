@@ -92,6 +92,9 @@ class MainActivity : AppCompatActivity() {
     private var nativeSurface: Surface? = null
     private var videoW = 0
     private var videoH = 0
+    /** Câmera do celular no lugar da A200 (só build de teste, `--ez phoneCam true`). */
+    private var phoneCam: PhoneCamera? = null
+    private var phoneCamMode = false
 
     // Câmera da direita (a outra do par frontal/traseira), sempre pelo player nativo
     private var rearPlayer: NativePlayer? = null
@@ -284,6 +287,8 @@ class MainActivity : AppCompatActivity() {
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnRoad.setOnClickListener { toggleRoad() }
+        phoneCamMode = BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)
+        if (phoneCamMode) useNative = true // o detector e o vídeo andam pelo caminho nativo
         roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
         // teste da rua do mapa sem sair do lugar: --ef mapLat -23.56 --ef mapLon -46.65 --ef mapBearing 310
         fakeMap = roadDemo && intent.hasExtra("mapLat")
@@ -485,6 +490,7 @@ class MainActivity : AppCompatActivity() {
 
     /** Wi-Fi que não é a câmera: não adianta tentar o vídeo (antes ficava batendo no roteador de casa). */
     private fun onOtherWifi(network: Network) {
+        if (phoneCamMode) return // teste com a câmera do celular: não há Wi-Fi da câmera a procurar
         if (wifiNetwork != null && wifiNetwork != network) return // a câmera continua conectada
         offCameraWifi = true
         if (roadMode && !roadDemo) b.roadView.message = null
@@ -522,8 +528,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun startPlayback() {
         handler.removeCallbacksAndMessages(RETRY)
-        if (offCameraWifi) return // espera o Wi-Fi da câmera voltar (onAvailable)
+        if (offCameraWifi && !phoneCamMode) return // espera o Wi-Fi da câmera voltar (onAvailable)
         releasePlayer()
+        if (phoneCamMode) { startPhoneCam(); return }
         sawVideo = false
         val gen = ++playGen
         if (customUrl.isNotBlank()) { startStreams(); return }
@@ -689,6 +696,29 @@ class MainActivity : AppCompatActivity() {
         nativePlayer = null
     }
 
+    /**
+     * Câmera do celular (só build de teste, `--ez phoneCam true`): o vídeo da traseira do aparelho
+     * vai para o mesmo TextureView da A200, então a detecção, o FCW e a Estrada rodam como no carro.
+     */
+    private fun startPhoneCam() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            return
+        }
+        // o TextureView começa escondido: sem ficar visível, a superfície não existe
+        b.playerView.visibility = View.GONE
+        b.textureView.visibility = View.VISIBLE
+        val st = b.textureView.surfaceTexture
+        if (!b.textureView.isAvailable || st == null) return // o listener reinicia quando ficar pronto
+        setState(State.LIVE, "Câmera do celular (teste)", "traseira do aparelho")
+        sawVideo = true
+        phoneCam = PhoneCamera(
+            this, st,
+            onSize = { w, h -> runOnUiThread { videoW = w; videoH = h; b.roadView.setVideoSize(w, h); b.adasOverlay.setVideoSize(w, h); fitVideo() } },
+            onError = { msg -> runOnUiThread { toast(msg) } },
+        ).also { it.start() }
+    }
+
     /** Nome amigável da fonte de vídeo. */
     private fun sourceName(path: String) = SOURCES.firstOrNull { it.second == path }?.first ?: path
 
@@ -762,6 +792,8 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(REAR)
         stopRear()
         stopNative()
+        phoneCam?.close()
+        phoneCam = null
         b.playerView.player = null
         player?.release()
         player = null
@@ -1479,6 +1511,7 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQ_LOCATION && (roadMode || adasOn) && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
             startSpeed()
         }
+        if (requestCode == REQ_CAMERA && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) startPlayback()
         if (requestCode == REQ_BT) {
             if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) showObdDialog()
             else toast("Sem a permissão de Bluetooth o DashLive não consegue falar com o adaptador OBD2.")
@@ -1779,6 +1812,7 @@ class MainActivity : AppCompatActivity() {
         private const val HEADUNIT_PKG = "com.andrerinas.headunitrevived"
         private const val REQ_LOCATION = 42
         private const val REQ_BT = 43
+        private const val REQ_CAMERA = 44
         /** Transparência de uma luz do painel apagada. */
         private const val LIGHT_OFF = 0.15f
 
