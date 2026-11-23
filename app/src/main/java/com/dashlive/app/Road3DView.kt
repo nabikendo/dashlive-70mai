@@ -621,15 +621,18 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val e = edges(c, s)
         var o = egoOffset(c, s) + lat // em relação ao eixo da rua
         val n = Math.round((e[1] - e[0]) / LANE_W).coerceAtLeast(1)
-        if (snap && n == 1) {
-            // rua de uma faixa só: quem está "ao lado" está estacionado ou saindo — fica na beira,
-            // meio na calçada (antes empilhava todos os veículos na única faixa)
-            o = o.coerceIn(e[0] - 1.0f, e[1] + 1.0f)
-        } else if (snap) {
-            // veículo: sempre no centro de uma faixa, dentro do asfalto (antes puxava só 70% e
-            // carros perto da linha ou da calçada ficavam meio fora da pista)
-            val k = kotlin.math.floor((o - e[0]) / LANE_W).toInt().coerceIn(0, n - 1)
-            o = e[0] + (k + 0.5f) * LANE_W
+        if (snap) {
+            // veículo: no centro de uma faixa. O que está FORA da pista (estacionado, no acostamento)
+            // fica no acostamento. Antes o "fora" era empurrado para a última faixa da direita, e
+            // carros estacionados apareciam em cima da sua faixa.
+            o = when {
+                o > e[1] + 0.6f -> e[1] + SHOULDER
+                o < e[0] - 0.6f -> e[0] - SHOULDER
+                else -> {
+                    val k = kotlin.math.floor((o - e[0]) / LANE_W).toInt().coerceIn(0, n - 1)
+                    e[0] + (k + 0.5f) * LANE_W
+                }
+            }
         } else {
             o = o.coerceIn(e[0] - 4f, e[1] + 4f)
         }
@@ -1355,6 +1358,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         private val IDENTITY = floatArrayOf(1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 0f, 1f)
         /** Largura de uma faixa nas ruas do mapa (m). */
         private const val LANE_W = 3.3f
+        /** Centro de um veículo parado no acostamento, a esta distância da borda da pista (m). */
+        private const val SHOULDER = 1.6f
         private const val EGO_W = 1.85f
         private const val EGO_H = 1.45f
         private const val EGO_L = 4.5f

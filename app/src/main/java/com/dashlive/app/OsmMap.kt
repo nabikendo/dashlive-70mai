@@ -295,6 +295,8 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
                             xy[k * 2] = ((g.getDouble("lon") - refLon) * kx).toFloat()
                             xy[k * 2 + 1] = ((g.getDouble("lat") - refLat) * M_PER_DEG_LAT).toFloat()
                         }
+                        // curvas suaves (o OSM tem pontos em zigue-zague); mesmo número de pontos
+                        smoothLine(xy)
                         ways += Way(e.getLong("id"), LongArray(nodes.length()) { nodes.getLong(it) }, xy, tags)
                     }
                     "node" -> {

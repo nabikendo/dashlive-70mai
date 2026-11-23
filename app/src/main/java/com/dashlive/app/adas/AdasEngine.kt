@@ -47,7 +47,8 @@ class AdasEngine(context: Context, val config: AdasConfig) {
         fcwActive = true
         fcw.sensitivity = config.sensitivity
         fcw.focalPx = config.calibrationFPx
-        val boxes = seen.mapNotNull { s ->
+        // carro vindo de frente (contramão) não é alvo de colisão frontal: ignora
+        val boxes = seen.filter { !it.oncoming }.mapNotNull { s ->
             val cls = when (s.kind) {
                 Kind.CAR -> FcwClass.CAR
                 Kind.TRUCK -> FcwClass.TRUCK
