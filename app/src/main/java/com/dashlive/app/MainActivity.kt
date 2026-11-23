@@ -414,6 +414,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onCameraWifi(network: Network, gateway: String?) {
         offCameraWifi = false
+        if (roadMode && !roadDemo) b.roadView.message = "Procurando veículos."
         b.overlay.setOnClickListener(null)
         b.overlay.isClickable = false
         wifiNetwork = network
@@ -427,6 +428,7 @@ class MainActivity : AppCompatActivity() {
     private fun onOtherWifi(network: Network) {
         if (wifiNetwork != null && wifiNetwork != network) return // a câmera continua conectada
         offCameraWifi = true
+        if (roadMode && !roadDemo) b.roadView.message = null
         playGen++ // descarta inícios que ainda esperavam a troca de lente
         wifiNetwork = null
         cm.bindProcessToNetwork(null)
@@ -1148,6 +1150,7 @@ class MainActivity : AppCompatActivity() {
         if (roadMode) {
             dumpNextFrame = true
             b.roadView.message = when {
+                offCameraWifi && !roadDemo -> null // o aviso de Wi-Fi já está no vídeo
                 rearLens -> "A simulação usa a câmera frontal. Troque em Câmeras."
                 useNative -> "Procurando veículos…"
                 else -> "A simulação precisa do player nativo"
