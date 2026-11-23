@@ -78,7 +78,7 @@ jobs:
           APP_VERSION_NAME: ${{ steps.ver.outputs.name }}
           APP_VERSION_CODE: ${{ steps.ver.outputs.code }}
         run: >
-          gradle :app:testDebugUnitTest :app:assembleRelease --no-daemon
+          gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease --no-daemon
           "-PappVersionName=$APP_VERSION_NAME"
           "-PappVersionCode=$APP_VERSION_CODE"
 
@@ -88,6 +88,9 @@ jobs:
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/DashLive-${RELEASE_TAG:-dev}.apk"
+          if [[ "$GITHUB_REF" == refs/heads/fix/* ]]; then
+            cp app/build/outputs/apk/debug/app-debug.apk dist/DashLive-debug.apk
+          fi
           ls -la dist
 
       - uses: actions/upload-artifact@v4
