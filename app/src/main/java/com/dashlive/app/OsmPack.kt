@@ -9,7 +9,15 @@ import kotlin.math.cos
  * e, para cada posição, recorta o mesmo quadrado que o [OsmClient] pediria ao Overpass
  * ([extract]) — o resto da Estrada não percebe diferença. Kotlin puro (testado em OsmPackTest).
  */
-class OsmPack(val info: Info, private val ways: List<RawWay>, private val pts: List<RawPt>) {
+class OsmPack(
+    val info: Info,
+    private val ways: List<RawWay>,
+    private val pts: List<RawPt>,
+    /** Prédios, muros/cercas (contorno com tags) e árvores (lat, lon) — vêm do pacote novo. */
+    private val blds: List<RawWay> = emptyList(),
+    private val walls: List<RawWay> = emptyList(),
+    private val trees: List<DoubleArray> = emptyList(),
+) {
 
     /** Dados do pacote (guardados em `<id>.meta.json`). [chunksDone] < [chunks] = incompleto. */
     class Info(
@@ -71,7 +79,31 @@ class OsmPack(val info: Info, private val ways: List<RawWay>, private val pts: L
             if (q.lat < s || q.lat > n || q.lon < w || q.lon > e) continue
             p += OsmMap.Point(((q.lon - lon) * kx).toFloat(), ((q.lat - lat) * OsmMap.M_PER_DEG_LAT).toFloat(), q.kind)
         }
-        return OsmMap(lat, lon, out, p)
+        val bl = ArrayList<OsmMap.Building>()
+        for (r in blds) {
+            if (r.n < s || r.s > n || r.e < w || r.w > e) continue
+            bl += OsmMap.Building(r.id, localXY(r, lat, lon, kx), OsmMap.buildingHeight(r.tags))
+        }
+        val wl = ArrayList<OsmMap.Wall>()
+        for (r in walls) {
+            if (r.n < s || r.s > n || r.e < w || r.w > e) continue
+            wl += OsmMap.Wall(localXY(r, lat, lon, kx), OsmMap.wallHeight(r.tags))
+        }
+        val tr = ArrayList<FloatArray>()
+        for (t in trees) {
+            if (t[0] < s || t[0] > n || t[1] < w || t[1] > e) continue
+            tr += floatArrayOf(((t[1] - lon) * kx).toFloat(), ((t[0] - lat) * OsmMap.M_PER_DEG_LAT).toFloat())
+        }
+        return OsmMap(lat, lon, out, p, bl, tr, wl)
+    }
+
+    private fun localXY(r: RawWay, lat: Double, lon: Double, kx: Double): FloatArray {
+        val xy = FloatArray(r.lat.size * 2)
+        for (k in r.lat.indices) {
+            xy[k * 2] = ((r.lon[k] - lon) * kx).toFloat()
+            xy[k * 2 + 1] = ((r.lat[k] - lat) * OsmMap.M_PER_DEG_LAT).toFloat()
+        }
+        return xy
     }
 
     companion object {
@@ -101,6 +133,9 @@ class OsmPack(val info: Info, private val ways: List<RawWay>, private val pts: L
             val els = JSONObject(json).getJSONArray("elements")
             val ways = ArrayList<RawWay>()
             val pts = ArrayList<RawPt>()
+            val blds = ArrayList<RawWay>()
+            val walls = ArrayList<RawWay>()
+            val trees = ArrayList<DoubleArray>()
             for (i in 0 until els.length()) {
                 val el = els.getJSONObject(i)
                 val tags = HashMap<String, String>()
@@ -118,15 +153,21 @@ class OsmPack(val info: Info, private val ways: List<RawWay>, private val pts: L
                             if (la[k] < s) s = la[k]; if (la[k] > n) n = la[k]
                             if (lo[k] < w) w = lo[k]; if (lo[k] > e) e = lo[k]
                         }
-                        ways += RawWay(el.getLong("id"), LongArray(nodes.length()) { nodes.getLong(it) }, la, lo, tags, s, w, n, e)
+                        val rw = RawWay(el.getLong("id"), LongArray(nodes.length()) { nodes.getLong(it) }, la, lo, tags, s, w, n, e)
+                        when {
+                            tags["building"] != null && tags["highway"] == null -> blds += rw
+                            tags["barrier"] == "wall" || tags["barrier"] == "fence" -> walls += rw
+                            else -> ways += rw
+                        }
                     }
                     "node" -> {
+                        if (tags["natural"] == "tree") { trees += doubleArrayOf(el.getDouble("lat"), el.getDouble("lon")); continue }
                         val kind = OsmMap.pointKind(tags) ?: continue
                         pts += RawPt(el.getDouble("lat"), el.getDouble("lon"), kind)
                     }
                 }
             }
-            return OsmPack(info, ways, pts)
+            return OsmPack(info, ways, pts, blds, walls, trees)
         }
 
         /**

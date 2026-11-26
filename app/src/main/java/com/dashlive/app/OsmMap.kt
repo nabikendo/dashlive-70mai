@@ -333,6 +333,11 @@ class OsmMap(
                 ");out body geom;"
         }
 
+        /** Altura de muro (2 m) ou cerca (1,2 m), com a tag `height` quando for um número. */
+        fun wallHeight(tags: Map<String, String>): Float =
+            tags["height"]?.let { Regex("""\d+(\.\d+)?""").find(it)?.value?.toFloatOrNull() }
+                ?: if (tags["barrier"] == "wall") 2f else 1.2f
+
         /** Altura do prédio: a tag `height`; senão 3 m por andar; senão 8 m. */
         fun buildingHeight(tags: Map<String, String>): Float {
             tags["height"]?.let { h -> Regex("""\d+(\.\d+)?""").find(h)?.value?.toFloatOrNull()?.takeIf { it > 1f }?.let { return it } }
@@ -359,6 +364,9 @@ class OsmMap(
                 "way[highway~\"^($types)$\"];" +
                 "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
+                "node[natural=tree];" +
+                "way[building];" +
+                "way[barrier~\"^(wall|fence)$\"];" +
                 ");out body geom;"
         }
 
@@ -393,8 +401,7 @@ class OsmMap(
                             continue
                         }
                         if (tags["barrier"] == "wall" || tags["barrier"] == "fence") {
-                            val h = tags["height"]?.let { Regex("""\d+(\.\d+)?""").find(it)?.value?.toFloatOrNull() }
-                            walls += Wall(xy, h ?: if (tags["barrier"] == "wall") 2f else 1.2f)
+                            walls += Wall(xy, wallHeight(tags))
                             continue
                         }
                         // curvas suaves (o OSM tem pontos em zigue-zague); mesmo número de pontos
