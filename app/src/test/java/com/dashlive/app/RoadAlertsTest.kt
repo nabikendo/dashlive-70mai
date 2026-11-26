@@ -54,4 +54,25 @@ class RoadAlertsTest {
         assertEquals(80f, s.maxKmh, 0.01f)
         assertEquals(266f, s.avgKmh, 5f)          // 222 m em 3 s
     }
+
+    @Test fun gpsSpeedDropsStandingNoise() {
+        assertEquals(0f, GpsSpeed.kmh(1.0f, null, 5f), 0.001f)       // 3,6 km/h parado: 0
+        assertEquals(0f, GpsSpeed.kmh(2.5f, 3.0f, 5f), 0.001f)       // erro maior que o valor: 0
+        assertEquals(0f, GpsSpeed.kmh(2.5f, 0.5f, 40f), 0.001f)      // posição ruim e devagar: 0
+        assertEquals(36f, GpsSpeed.kmh(10f, 0.8f, 8f), 0.001f)       // andando de verdade
+        assertEquals(36f, GpsSpeed.kmh(10f, null, null), 0.001f)
+    }
+
+    @Test fun tripSummaryIgnoresGpsDriftWhileStopped() {
+        // parado 20 s com o GPS "andando" ~22 m: não soma distância
+        val pts = listOf(
+            TripPoint(0L, 0.0, 0.0, 0f, null),
+            TripPoint(10_000L, 0.0001, 0.0, 0f, null),
+            TripPoint(20_000L, 0.0002, 0.0, 0f, null),
+        )
+        val s = TripLog.summary(pts)
+        assertEquals(0.0, s.distanceM, 0.001)
+        assertEquals(20_000L, s.stoppedMs)
+        assertEquals(0f, s.avgKmh, 0.001f)
+    }
 }

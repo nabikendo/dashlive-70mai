@@ -1636,12 +1636,16 @@ class MainActivity : AppCompatActivity() {
                 b.road3d.onLocation(loc.latitude, loc.longitude, bearing)
                 feedMap(loc.latitude, loc.longitude)
             }
+            // velocidade limpa: parado (ou com erro maior que o valor) vira 0, sem bipe de limite à toa
+            val accS = if (loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond else null
+            val accH = if (loc.hasAccuracy()) loc.accuracy else null
+            val kmh = if (loc.hasSpeed()) GpsSpeed.kmh(loc.speed, accS, accH) else null
             // grava o ponto da viagem (a Estrada aberta; o TripRecorder guarda 1 por segundo)
-            if (!replaying) recorder?.add(System.currentTimeMillis(), loc.latitude, loc.longitude, if (loc.hasSpeed()) loc.speed * 3.6f else null, bearing)
+            if (!replaying) recorder?.add(System.currentTimeMillis(), loc.latitude, loc.longitude, kmh, bearing)
             // com o OBD2 conectado, a velocidade do carro tem prioridade (mais precisa e sem atraso)
-            if (loc.hasSpeed() && !obdFresh && !fakeMap && !replaying) {
-                b.roadView.speedKmh = loc.speed * 3.6f
-                egoKmh = loc.speed * 3.6f; egoAt = SystemClock.elapsedRealtime()
+            if (kmh != null && !obdFresh && !fakeMap && !replaying) {
+                b.roadView.speedKmh = kmh
+                egoKmh = kmh; egoAt = SystemClock.elapsedRealtime()
             }
         }
         override fun onProviderEnabled(provider: String) {}

@@ -37,3 +37,20 @@ class RadarAlarm(private val warnM: Float = 300f, private val clearM: Float = 35
         return false
     }
 }
+
+/**
+ * Velocidade do GPS sem o ruído de quando o carro está parado: dentro de casa o S24 FE marcou
+ * 9 km/h parado (26/11/2026). Parado ou com erro maior que o valor = 0 km/h.
+ */
+object GpsSpeed {
+    /** Abaixo disso (m/s) conta como parado: 1,4 m/s ≈ 5 km/h. */
+    const val STILL_MPS = 1.4f
+
+    /** [speedAccMps] e [horizAccM] são a precisão informada pelo GPS (null = não informada). */
+    fun kmh(speedMps: Float, speedAccMps: Float?, horizAccM: Float?): Float {
+        if (speedMps < STILL_MPS) return 0f
+        if (speedAccMps != null && speedAccMps >= speedMps) return 0f // erro maior que a própria velocidade
+        if (horizAccM != null && horizAccM > 25f && speedMps < 4f) return 0f // posição ruim e devagar: ruído
+        return speedMps * 3.6f
+    }
+}

@@ -56,11 +56,25 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 - `Updater.kt`: atualização dentro do app pelo GitHub Releases (usa rede com internet, ignora o Wi-Fi da câmera).
 - Armadilha: nunca ler `prefs`/contexto em inicializador de campo da Activity (derrubou a v1.1.4).
 
+## Versão 1.12.0 (em teste, 26/11/2026; branch `feature/viagem-avisos-osm`, pré-lançamentos rc.1–rc.9)
+- **Avisos à frente**: `OsmMap.nextTurn` (1ª mudança de rumo ≥ 30° em até 250 m), `nextPoints` (pontos a ≤ 12 m da rota, até 300 m), `describeAhead` ("curva à direita em 120 m • 2 radares, o próximo em 120 m • semáforo em … • lombada em …"). Calculado no `Road3DView` a cada 0,5 s (`aheadInfo`, `nearestRadarM`) e mostrado na linha de status da Estrada. Radar = `highway=speed_camera` (`PointKind.RADAR`), desenhado como poste com caixa quando está a até 40 m da rua.
+- **Sons** (`RoadAlerts.kt`, testado em `RoadAlertsTest`): `SpeedAlarm` (1 bipe ao passar do limite + 3 km/h, repete a cada 5 s, rearma ao voltar ao limite) e `RadarAlarm` (2 bipes ao entrar nos 300 m do radar, rearma a 350 m). Tocam por `AdasEngine.playSpeedAlert` com o volume do ADAS; modo silencioso = sem som.
+- **GPS parado**: `GpsSpeed.kmh` dá 0 abaixo de 1,4 m/s, quando o erro de velocidade ≥ valor, ou com precisão > 25 m abaixo de 4 m/s (o S24 FE marcou 9 km/h parado dentro de casa em 26/11/2026).
+- **Viagens** (`TripLog.kt`, testado em `TripLogTest`): com a Estrada aberta grava 1 ponto/s (`t_ms,lat,lon,speed_kmh,bearing`) em `files/viagens/viagem_AAAAMMDD_HHMMSS.csv` (viagem sem pontos é apagada). Segurar o botão Estrada = lista com resumo (distância, média, tempo parado; trecho parado não soma distância) → replay (`tripTick` a cada 250 ms, GPS real ignorado, `replaying`). Sem vídeo e sem setas/faróis do OBD.
+- **Cena 3D**: prédios do OSM (`way[building]`; altura = `height`, ou 3 m por andar + 1 m, ou 8 m) até 260 m, cor de parede pelo id, telhado em leque (prédio côncavo fica com furo), janelas por andar até 120 m; árvores (`natural=tree`) e muros/cercas (`barrier=wall|fence`, 2 m/1,2 m ou `height`) até 180 m; o sol projeta sombra e as malhas recebem sombra. Os pacotes offline novos também trazem isso (`OsmPack` guarda à parte, não vira rua); pacotes antigos e o cache de 7 dias não têm.
+- **Câmera do celular**: Câmeras → "Celular: câmera traseira (teste)" (pref `phoneCamTest`, permissão CAMERA no manifesto), além do `--ez phoneCam true` do build de teste.
+- **Alternar lentes**: Câmeras → "Alternar frontal e traseira" (3, 5 ou 10 s; prefs `altLens`/`altSeconds`): `setwifistream` a cada intervalo, sem reconectar (~0,4 s). `rearNow` inclui `altLens && altPhase`, então os quadros da traseira não alimentam FCW/LDW (que ficam ativos só na metade do tempo). Continua com a Estrada aberta. Testado no S24 FE em 26/11/2026.
+- **Câmera, sondada em 26/11/2026**: firmware 1.5.61ww; `getcapability.cgi` e `getparameter.cgi` devolvem `-5555` sem pareamento. O app oficial (MiDrive 4.5.0) tem `setpictureinpicture.cgi`, não testado: frontal e traseira ao mesmo tempo continua sem confirmação.
+- **Dados do OSM**: em volta da Av. Gomes Calado (−6,8532, −47,9686) não há prédios, árvores nem muros num raio de 450 m (26/11/2026); a cena 3D fica só com a rua.
+- Falta: testar dirigindo (bipes, radar, gravação e replay com movimento), ver prédios/árvores numa área mapeada, levar a branch para a main e lançar a v1.12.0.
+
 ## Build e publicação
 - CI: `.github/workflows/build.yml` (Gradle 8.7, AGP 8.5.2, Kotlin 1.9.24). Baixa o modelo `efficientdet_lite0.tflite` para `app/src/main/assets/` (fora do git).
 - A assinatura vem dos segredos `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD`. A chave NÃO está no repositório.
 - Release: criar a tag `vX.Y.Z` no GitHub (Releases → Draft a new release); a Action anexa `DashLive-vX.Y.Z.apk`. Atualizar `appVersionName`/`appVersionCode` padrão em `app/build.gradle.kts`.
 - Build local (no PC): precisa de JDK 17 e Android SDK 34; `gradle :app:testDebugUnitTest :app:assembleDebug`. Neste PC as ferramentas estão em `C:\Users\Ariane\dev-tools` (jdk17, gradle-8.7, android-sdk, mingit): defina `JAVA_HOME` e `ANDROID_HOME` para elas.
+- **Build de teste sem release**: enviar a branch `preview/vX.Y.Z-rc.N` (ex.: `git push origin HEAD:refs/heads/preview/v1.12.0-rc.9`); a Action publica um pré-lançamento (`--prerelease`, fora de "latest") com o APK assinado.
+- No PC Linux (`/home/nabikendo`) o SDK não tem plataforma Android: o app só compila no CI. Os testes puros podem ser compilados à parte com o `kotlin-compiler-embeddable` do cache do Gradle e substitutos mínimos de `org.json`/JUnit (fora do repositório).
 - O build debug é `com.dashlive.app.debug` ("DashLive teste") e instala ao lado do app oficial (a chave de release é outra; `adb install -r` por cima do oficial falharia).
 
 ## Testar no tablet por USB
@@ -69,6 +83,7 @@ Repositório: github.com/nabikendo/dashlive-70mai (público, licença MIT). Fala
 3. Conectar o tablet ao Wi-Fi da câmera (a depuração por USB continua funcionando).
 4. Logs: `adb logcat -s AndroidRuntime DashLive TaskJniUtils` (o app registra com a tag `DashLive`). Captura de tela no PowerShell 5.1: `adb shell screencap -p /sdcard/tela.png` e `adb pull /sdcard/tela.png` (o `>` do PowerShell corrompe o PNG).
 5. Atraso: compare o relógio gravado no vídeo com o relógio da câmera (`devts` de `/cgi-bin/getdeviceattr.cgi`, lido pelo `nc` do tablet) no instante da captura.
+6. **S24 FE (SM_S721B, Android 17) por adb no PC Linux** (`/usr/bin/adb`). Tela deitada 2340×1080: Câmeras (190, 120), Estrada (190, 700), "Ver cena 3D" (2110, 960); segurar Estrada = `input swipe 190 700 190 700 1200`. Instalar o pré-lançamento: `gh release download vX.Y.Z-rc.N --pattern "*.apk"` e `adb install -r`. O celular não tem dados móveis: no Wi-Fi da câmera não há internet, então mapa novo só baixa no Wi-Fi de casa (depois fica guardado 7 dias). Trocar de rede: `adb shell cmd wifi connect-network <SSID> wpa2 <senha>` (peça a senha ao usuário; não gravar no repositório). Sem `curl` no celular: para a API da câmera use `printf 'GET /cgi-bin/<nome>.cgi HTTP/1.0\r\n\r\n' | nc -w 5 192.168.0.1 80`.
 
 ## Lista de testes
 - Abre sem fechar; mostra "Ao vivo" e imagem da frontal; medir o atraso (conferir a hora na tela).

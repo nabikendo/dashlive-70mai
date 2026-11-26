@@ -53,8 +53,10 @@ object TripLog {
         for (i in 1 until pts.size) {
             val a = pts[i - 1]; val b = pts[i]
             val dt = (b.t - a.t).coerceAtLeast(0L)
-            dist += RouteSim.distance(a.lat, a.lon, b.lat, b.lon)
             val v = b.speedKmh
+            // parado nos dois pontos: o deslocamento é ruído do GPS, não soma distância
+            val still = v != null && v < STOPPED_KMH && (a.speedKmh ?: 0f) < STOPPED_KMH
+            if (!still) dist += RouteSim.distance(a.lat, a.lon, b.lat, b.lon)
             if (v != null) {
                 if (v > max) max = v
                 if (v < STOPPED_KMH) stopped += dt else moving += dt
