@@ -306,7 +306,8 @@ class MainActivity : AppCompatActivity() {
         b.btnRoad.setOnClickListener { toggleRoad() }
         // segurar o botão Estrada: reproduz uma viagem gravada (ou para a reprodução)
         b.btnRoad.setOnLongClickListener { showTrips(); true }
-        phoneCamMode = BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)
+        // câmera do celular: pelo teste (--ez phoneCam true) ou pelo menu Câmeras (guardado até trocar)
+        phoneCamMode = (BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)) || prefs.getBoolean("phoneCamTest", false)
         if (phoneCamMode) useNative = true // o detector e o vídeo andam pelo caminho nativo
         roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
         // teste da rua do mapa sem sair do lugar: --ef mapLat -23.56 --ef mapLon -46.65 --ef mapBearing 310
@@ -581,8 +582,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Botão Câmeras: frontal ou traseira (troca a lente na câmera); endereços RTSP ficam no "avançado". */
     private fun pickCamera() {
-        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)")
+        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)", "Celular: câmera traseira (teste)")
         val cur = when {
+            phoneCamMode -> 3
             customUrl.isNotBlank() -> -1
             rearLens -> 1
             else -> 0
@@ -592,6 +594,9 @@ class MainActivity : AppCompatActivity() {
             .setSingleChoiceItems(items, cur) { d, which ->
                 d.dismiss()
                 if (which == 2) { pickSource(main = true); return@setSingleChoiceItems }
+                if (which == 3) { usePhoneCam(); return@setSingleChoiceItems }
+                // sai da câmera do celular, se estava nela
+                if (phoneCamMode) { phoneCamMode = false; prefs.edit().putBoolean("phoneCamTest", false).apply() }
                 rearLens = which == 1
                 customUrl = ""
                 refreshInfo()
@@ -601,6 +606,18 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Fechar", null)
             .show()
+    }
+
+    /** Troca para a câmera traseira do celular (teste); a escolha fica salva até voltar para a A200. */
+    private fun usePhoneCam() {
+        phoneCamMode = true
+        useNative = true // o detector e o vídeo andam pelo caminho nativo
+        prefs.edit().putBoolean("phoneCamTest", true).apply()
+        customUrl = ""
+        refreshInfo()
+        startPlayback()
+        if (roadMode) { roadMode = false; toggleRoad() } // reaplica a Estrada para a fonte nova
+        else restartDetect()
     }
 
     private fun lensName() = if (rearLens) "Traseira" else "Frontal"
