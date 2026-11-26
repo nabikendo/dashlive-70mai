@@ -42,6 +42,36 @@ object TripLog {
     fun list(dir: File): List<File> = dir.listFiles { f -> f.name.startsWith("viagem_") && f.name.endsWith(".csv") }
         ?.sortedByDescending { it.name }.orEmpty()
 
+    /** Resumo de uma viagem: distância, tempo andando e parado, média e máxima (km/h). */
+    data class Summary(val distanceM: Double, val movingMs: Long, val stoppedMs: Long, val avgKmh: Float, val maxKmh: Float)
+
+    /** Abaixo disso o carro conta como parado (semáforo, trânsito). */
+    const val STOPPED_KMH = 3f
+
+    fun summary(pts: List<TripPoint>): Summary {
+        var dist = 0.0; var moving = 0L; var stopped = 0L; var max = 0f
+        for (i in 1 until pts.size) {
+            val a = pts[i - 1]; val b = pts[i]
+            val dt = (b.t - a.t).coerceAtLeast(0L)
+            dist += RouteSim.distance(a.lat, a.lon, b.lat, b.lon)
+            val v = b.speedKmh
+            if (v != null) {
+                if (v > max) max = v
+                if (v < STOPPED_KMH) stopped += dt else moving += dt
+            }
+        }
+        val total = pts.lastOrNull()?.t ?: 0L
+        val avg = if (total > 0) (dist / (total / 1000.0) * 3.6).toFloat() else 0f
+        return Summary(dist, moving, stopped, avg, max)
+    }
+
+    /** Uma linha para a lista de viagens: "12,4 km • média 45 km/h • parado 3 min". */
+    fun summaryText(s: Summary): String {
+        val pt = Locale("pt", "BR")
+        val stoppedMin = s.stoppedMs / 60_000.0
+        return "%.1f km • média %.0f km/h • parado %.0f min".format(pt, s.distanceM / 1000.0, s.avgKmh, stoppedMin)
+    }
+
     /** Posição da viagem em [t] ms desde o início (interpolada entre dois pontos); null depois do fim. */
     class Track(private val pts: List<TripPoint>) {
         val durationMs: Long get() = pts.lastOrNull()?.t ?: 0L

@@ -122,4 +122,16 @@ class OsmMapTest {
         assertEquals(1, m.points.size)
         assertEquals(OsmMap.PointKind.RADAR, m.points[0].kind)
     }
+
+    @Test fun countsRadarsAhead() {
+        // dois radares na própria rua, a 120 m e a 200 m à frente do carro
+        val m = OsmMap.parse("""{"elements":[
+            ${way(1, "\"highway\":\"residential\"", Triple(1, 0.0, -100.0), Triple(2, 0.0, 0.0), Triple(3, 0.0, 300.0))},
+            {"type":"node","id":30,"lat":${lat(120.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}},
+            {"type":"node","id":31,"lat":${lat(200.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}}
+        ]}""", 0.0, 0.0)
+        val c = m.corridor(m.match(0f, 0f, 0f)!!)
+        val desc = m.describeAhead(c)!!
+        assertTrue(desc, desc.contains("2 radares, o próximo em 120 m"))
+    }
 }

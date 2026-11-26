@@ -501,6 +501,9 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     var aheadInfo: String? = null
         private set
     private var aheadTimer = 0f
+    /** Distância (m) até o radar mais perto à frente na rota, ou null. Para o aviso sonoro. */
+    var nearestRadarM: Float? = null
+        private set
     /** Limite de velocidade (km/h) da rua onde o carro está, pelo maxspeed do OSM; null se não há. */
     var speedLimitKmh: Int? = null
         private set
@@ -693,7 +696,11 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         speedLimitKmh = SpeedLimit.parse(w.tags["maxspeed"])
         // o que vem à frente: recalcula a cada meio segundo (não precisa de quadro a quadro)
         aheadTimer -= dt
-        if (aheadTimer <= 0f) { aheadTimer = 0.5f; aheadInfo = m.describeAhead(cc) }
+        if (aheadTimer <= 0f) {
+            aheadTimer = 0.5f
+            aheadInfo = m.describeAhead(cc)
+            nearestRadarM = m.nextPoints(cc).firstOrNull { it.kind == OsmMap.PointKind.RADAR }?.dist
+        }
     }
 
     /** Apaga a malha do trecho e volta para a estrada genérica. */
@@ -703,6 +710,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         cor = null
         streetInfo = null
         aheadInfo = null
+        nearestRadarM = null
         speedLimitKmh = null
         for (ent in genericEnts) if (!scene.hasEntity(ent)) scene.addEntity(ent)
     }

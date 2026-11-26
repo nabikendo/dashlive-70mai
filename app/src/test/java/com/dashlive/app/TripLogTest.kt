@@ -59,4 +59,9 @@ class TripLogTest {
         assertTrue(TripLog.fileName(0L).startsWith("viagem_") && TripLog.fileName(0L).endsWith(".csv"))
         f.delete()
     }
+
+    @Test fun summaryTextIsReadable() {
+        val s = TripLog.Summary(distanceM = 12_400.0, movingMs = 600_000L, stoppedMs = 180_000L, avgKmh = 45.2f, maxKmh = 80f)
+        assertEquals("12,4 km • média 45 km/h • parado 3 min", TripLog.summaryText(s))
+    }
 }

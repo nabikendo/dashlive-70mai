@@ -260,7 +260,11 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
         val parts = ArrayList<String>()
         nextTurn(c)?.let { parts += "curva à ${if (it.right) "direita" else "esquerda"} em ${it.dist.roundToInt()} m" }
         val pts = nextPoints(c)
-        for ((kind, name) in listOf(PointKind.RADAR to "radar", PointKind.SIGNAL to "semáforo", PointKind.BUMP to "lombada")) {
+        // radares: quantos há à frente e a que distância está o próximo
+        val radars = pts.filter { it.kind == PointKind.RADAR }
+        if (radars.size == 1) parts += "radar em ${radars[0].dist.roundToInt()} m"
+        else if (radars.size > 1) parts += "${radars.size} radares, o próximo em ${radars[0].dist.roundToInt()} m"
+        for ((kind, name) in listOf(PointKind.SIGNAL to "semáforo", PointKind.BUMP to "lombada")) {
             pts.firstOrNull { it.kind == kind }?.let { parts += "$name em ${it.dist.roundToInt()} m" }
         }
         return if (parts.isEmpty()) null else parts.joinToString(" • ")

@@ -49,6 +49,16 @@ class AdasAlert(context: Context) {
         }
     }
 
+    /** Limite de velocidade passado = 1 bipe; radar à frente = 2 bipes curtos. */
+    fun playSpeed(volume: Int, radar: Boolean) {
+        h.post {
+            if (volume <= 0 || audio?.ringerMode == AudioManager.RINGER_MODE_SILENT) return@post
+            val g = generator(volume) ?: return@post
+            g.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
+            if (radar) h.postDelayed({ tone?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120) }, 220)
+        }
+    }
+
     private fun generator(volume: Int): ToneGenerator? {
         if (volume != toneVolume || tone == null) {
             tone?.release()

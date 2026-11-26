@@ -25,6 +25,9 @@ class AdasEngine(context: Context, val config: AdasConfig) {
     private val finder = LaneFinder()
     private val ldw = LdwLogic()
     private val alert = AdasAlert(context)
+
+    /** Aviso de limite de velocidade (radar = false) ou de radar à frente (radar = true), com o volume do ADAS. */
+    fun playSpeedAlert(radar: Boolean) = alert.playSpeed(config.volume, radar)
     private val main = Handler(Looper.getMainLooper())
     private var fcwActive = false
     private var ldwActive = false

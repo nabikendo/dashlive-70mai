@@ -140,6 +140,10 @@ class MainActivity : AppCompatActivity() {
                 val hot = if (thermalLevel() >= 3) "aparelho quente, detecção reduzida • " else ""
                 val ahead = b.road3d.aheadInfo?.let { " • $it" } ?: ""
                 val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "") + ahead
+                // avisos sonoros: passou do limite (um bipe) e radar que se aproxima (dois bipes)
+                val nowMs = SystemClock.elapsedRealtime()
+                if (speedAlarm.update(nowMs, speed, limit)) adas?.playSpeedAlert(radar = false)
+                if (radarAlarm.update(b.road3d.nearestRadarM)) adas?.playSpeedAlert(radar = true)
                 b.roadView.mapStatus = when {
                     limit == null -> base
                     speed != null && speed > limit + 3 -> "$base • ACIMA DO LIMITE ($limit km/h)"
@@ -1625,6 +1629,9 @@ class MainActivity : AppCompatActivity() {
         if (r.points == 0) r.file.delete()
     }
 
+    private val speedAlarm = SpeedAlarm()
+    private val radarAlarm = RadarAlarm()
+
     private val tripTick = object : Runnable {
         override fun run() {
             val tr = tripTrack ?: return
@@ -1666,7 +1673,11 @@ class MainActivity : AppCompatActivity() {
         }
         val files = TripLog.list(tripsDir)
         if (files.isEmpty()) { toast("Nenhuma viagem gravada: abra a Estrada com o GPS ligado"); return }
-        val names = files.map { it.nameWithoutExtension.removePrefix("viagem_") }.toTypedArray<CharSequence>()
+        val names = files.map { f ->
+            val date = f.nameWithoutExtension.removePrefix("viagem_")
+            val sum = runCatching { TripLog.summary(TripLog.parse(f.readText())) }.getOrNull()
+            if (sum == null) date else "$date • ${TripLog.summaryText(sum)}"
+        }.toTypedArray<CharSequence>()
         AlertDialog.Builder(this).setTitle("Reproduzir viagem")
             .setItems(names) { _, i -> startReplay(files[i]) }
             .setNegativeButton("Cancelar", null).show()
