@@ -134,4 +134,15 @@ class OsmMapTest {
         val desc = m.describeAhead(c)!!
         assertTrue(desc, desc.contains("2 radares, o próximo em 120 m"))
     }
+
+    @Test fun parsesBuildingsWithHeight() {
+        // prédio de 3 andares (3 × 3 m + 1 m) com contorno fechado; não é rua
+        val m = OsmMap.parse("""{"elements":[
+            ${way(40, "\"building\":\"yes\",\"building:levels\":\"3\"", Triple(41, 0.0, 0.0), Triple(42, 10.0, 0.0), Triple(43, 10.0, 10.0), Triple(44, 0.0, 0.0))}
+        ]}""", 0.0, 0.0)
+        assertEquals(0, m.ways.size)
+        assertEquals(1, m.buildings.size)
+        assertEquals(10f, m.buildings[0].height, 0.01f)
+        assertEquals(4, m.buildings[0].xy.size / 2)
+    }
 }
