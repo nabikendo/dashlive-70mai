@@ -220,6 +220,15 @@ class MainActivity : AppCompatActivity() {
         set(v) = prefs.edit().putInt("autoRearHold", v).apply()
     /** A câmera de ré está ativa agora por causa da seta (não muda a escolha salva em Câmeras). */
     private var autoRearActive = false
+    /** Alternância frontal/traseira ligada e intervalo em segundos (sem reconectar). */
+    private var altLens: Boolean
+        get() = prefs.getBoolean("altLens", false)
+        set(v) = prefs.edit().putBoolean("altLens", v).apply()
+    private var altSeconds: Int
+        get() = prefs.getInt("altSeconds", 5)
+        set(v) = prefs.edit().putInt("altSeconds", v).apply()
+    /** Lente que a alternância está mostrando agora (true = traseira). */
+    private var altPhase = false
     /** Lente que a câmera deve ter agora: a escolhida em Câmeras ou a de ré pela seta. */
     private val rearNow: Boolean get() = rearLens || autoRearActive
 
@@ -567,6 +576,8 @@ class MainActivity : AppCompatActivity() {
             CameraApi.setLens(ip, rear)
             runOnUiThread { if (gen == playGen) startStreams() }
         }.start()
+        // alternância ligada: retoma o revezamento (ex.: depois de voltar ao app)
+        if (altLens && !roadMode) { handler.removeCallbacks(altTick); handler.postDelayed(altTick, altSeconds * 1000L) }
     }
 
     private fun startStreams() {
@@ -586,8 +597,9 @@ class MainActivity : AppCompatActivity() {
 
     /** Botão Câmeras: frontal ou traseira (troca a lente na câmera); endereços RTSP ficam no "avançado". */
     private fun pickCamera() {
-        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)", "Celular: câmera traseira (teste)")
+        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)", "Celular: câmera traseira (teste)", "Alternar frontal e traseira")
         val cur = when {
+            altLens -> 4
             phoneCamMode -> 3
             customUrl.isNotBlank() -> -1
             rearLens -> 1
@@ -599,6 +611,8 @@ class MainActivity : AppCompatActivity() {
                 d.dismiss()
                 if (which == 2) { pickSource(main = true); return@setSingleChoiceItems }
                 if (which == 3) { usePhoneCam(); return@setSingleChoiceItems }
+                if (which == 4) { pickAltInterval(); return@setSingleChoiceItems }
+                stopAlternating()
                 // sai da câmera do celular, se estava nela
                 if (phoneCamMode) { phoneCamMode = false; prefs.edit().putBoolean("phoneCamTest", false).apply() }
                 rearLens = which == 1
@@ -610,6 +624,57 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Fechar", null)
             .show()
+    }
+
+    /** Intervalo da alternância entre frontal e traseira (sem reconectar: a troca leva ~0,4 s). */
+    private fun pickAltInterval() {
+        val secs = intArrayOf(3, 5, 10)
+        val names = secs.map { "a cada $it s" }.toTypedArray()
+        val cur = secs.indexOf(altSeconds).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Alternar frontal e traseira")
+            .setSingleChoiceItems(names, cur) { d, which ->
+                d.dismiss()
+                altSeconds = secs[which]
+                startAlternating()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Liga a alternância: a frente e a traseira se revezam na mesma transmissão. Não funciona na Estrada. */
+    private fun startAlternating() {
+        if (phoneCamMode || customUrl.isNotBlank()) { toast("Alternância só com a A200 (sem Endereço personalizado)"); return }
+        if (roadMode) { toast("A alternância para enquanto a Estrada está aberta"); return }
+        altLens = true
+        altPhase = rearLens
+        refreshInfo()
+        startPlayback() // a transmissão começa na lente escolhida; depois a alternância segue
+        handler.removeCallbacks(altTick)
+        handler.postDelayed(altTick, altSeconds * 1000L)
+    }
+
+    /** Desliga a alternância e volta para a lente salva em Câmeras. */
+    private fun stopAlternating() {
+        if (!altLens) return
+        altLens = false
+        handler.removeCallbacks(altTick)
+        val ip = camIp
+        val rear = rearNow
+        Thread { CameraApi.setLens(ip, rear) }.start()
+        refreshInfo()
+    }
+
+    /** Troca de lente a cada [altSeconds] s, sem reconectar. */
+    private val altTick = object : Runnable {
+        override fun run() {
+            if (!altLens) return
+            altPhase = !altPhase
+            val ip = camIp
+            val rear = altPhase
+            Thread { CameraApi.setLens(ip, rear) }.start()
+            handler.postDelayed(this, altSeconds * 1000L)
+        }
     }
 
     /** Troca para a câmera traseira do celular (teste); a escolha fica salva até voltar para a A200. */
@@ -624,7 +689,11 @@ class MainActivity : AppCompatActivity() {
         else restartDetect()
     }
 
-    private fun lensName() = if (rearLens) "Traseira" else "Frontal"
+    private fun lensName() = when {
+        altLens -> "Alternando frontal e traseira (a cada $altSeconds s)"
+        rearLens -> "Traseira"
+        else -> "Frontal"
+    }
 
     /** Nome da tela grande: a lente e, se não for o caminho padrão, o caminho RTSP. */
     private fun mainName() = when {
@@ -1343,6 +1412,8 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- simulação da estrada
 
     private fun toggleRoad() {
+        // a Estrada usa só a frontal: ao abri-la, a alternância para (e a lente volta para a salva)
+        if (!roadMode && altLens) stopAlternating()
         roadMode = !roadMode
         if (roadMode) startRecorder() else { stopRecorder(); stopReplay() }
         if (roadMode) updateDay() // define dia/noite já ao abrir (para o modo noturno)
