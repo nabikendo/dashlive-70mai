@@ -230,7 +230,7 @@ class MainActivity : AppCompatActivity() {
     /** Lente que a alternância está mostrando agora (true = traseira). */
     private var altPhase = false
     /** Lente que a câmera deve ter agora: a escolhida em Câmeras ou a de ré pela seta. */
-    private val rearNow: Boolean get() = rearLens || autoRearActive
+    private val rearNow: Boolean get() = rearLens || autoRearActive || (altLens && altPhase)
 
     /** Troca a lente pela seta (sem mudar a escolha salva). Desligar volta para a lente escolhida. */
     private fun setAutoRear(on: Boolean) {
@@ -645,7 +645,6 @@ class MainActivity : AppCompatActivity() {
     /** Liga a alternância: a frente e a traseira se revezam na mesma transmissão. Não funciona na Estrada. */
     private fun startAlternating() {
         if (phoneCamMode || customUrl.isNotBlank()) { toast("Alternância só com a A200 (sem Endereço personalizado)"); return }
-        if (roadMode) { toast("A alternância para enquanto a Estrada está aberta"); return }
         altLens = true
         altPhase = rearLens
         refreshInfo()
@@ -1412,8 +1411,6 @@ class MainActivity : AppCompatActivity() {
     // ---------------------------------------------------------------- simulação da estrada
 
     private fun toggleRoad() {
-        // a Estrada usa só a frontal: ao abri-la, a alternância para (e a lente volta para a salva)
-        if (!roadMode && altLens) stopAlternating()
         roadMode = !roadMode
         if (roadMode) startRecorder() else { stopRecorder(); stopReplay() }
         if (roadMode) updateDay() // define dia/noite já ao abrir (para o modo noturno)
