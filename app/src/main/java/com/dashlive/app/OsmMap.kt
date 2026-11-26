@@ -2,9 +2,11 @@ package com.dashlive.app
 
 import org.json.JSONObject
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * Ruas em volta do carro, vindas do OpenStreetMap (Overpass, `out body geom`), em metros num plano
@@ -19,7 +21,7 @@ import kotlin.math.hypot
  */
 class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val points: List<Point>) {
 
-    enum class PointKind { CROSSING, BUMP, SIGNAL, LAMP }
+    enum class PointKind { CROSSING, BUMP, SIGNAL, LAMP, RADAR }
 
     class Point(val x: Float, val y: Float, val kind: PointKind)
 
@@ -217,6 +219,53 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
         return Corridor(xy, s, segWay, segRev)
     }
 
+    /** Curva à frente: a que distância começa, para que lado (direita = true) e quantos graus. */
+    class Turn(val dist: Float, val right: Boolean, val deg: Float)
+
+    /** Ponto do mapa à frente, na rota, e a que distância do carro. */
+    class Ahead(val dist: Float, val kind: PointKind)
+
+    /**
+     * Primeira mudança de rumo de pelo menos [minDeg] no trecho à frente (até [within] m), comparando
+     * o rumo a cada [step] m com o rumo do carro. Pega curvas suaves e as de cruzamento.
+     */
+    fun nextTurn(c: Corridor, minDeg: Float = 30f, within: Float = 250f, step: Float = 5f): Turn? {
+        val out = FloatArray(3)
+        c.at(0f, out)
+        val h0 = out[2]
+        val minRad = Math.toRadians(minDeg.toDouble()).toFloat()
+        val lim = minOf(within, c.end)
+        var d = step
+        while (d <= lim) {
+            c.at(d, out)
+            val diff = signedAngle(out[2], h0)
+            if (abs(diff) >= minRad) return Turn(d, diff > 0, abs(diff) * 180f / PI.toFloat())
+            d += step
+        }
+        return null
+    }
+
+    /** Pontos do mapa (lombada, semáforo, radar, ...) à frente, a até [off] m da rota, em ordem. */
+    fun nextPoints(c: Corridor, within: Float = 300f, off: Float = 12f): List<Ahead> {
+        val res = ArrayList<Ahead>()
+        for (p in points) {
+            val (s, d) = c.project(p.x, p.y)
+            if (s > 0f && s <= within && d <= off) res += Ahead(s, p.kind)
+        }
+        return res.sortedBy { it.dist }
+    }
+
+    /** Frase curta do que vem à frente (curva, radar, semáforo, lombada), ou null se não há nada. */
+    fun describeAhead(c: Corridor): String? {
+        val parts = ArrayList<String>()
+        nextTurn(c)?.let { parts += "curva à ${if (it.right) "direita" else "esquerda"} em ${it.dist.roundToInt()} m" }
+        val pts = nextPoints(c)
+        for ((kind, name) in listOf(PointKind.RADAR to "radar", PointKind.SIGNAL to "semáforo", PointKind.BUMP to "lombada")) {
+            pts.firstOrNull { it.kind == kind }?.let { parts += "$name em ${it.dist.roundToInt()} m" }
+        }
+        return if (parts.isEmpty()) null else parts.joinToString(" • ")
+    }
+
     companion object {
         const val M_PER_DEG_LAT = 110_540.0
         const val M_PER_DEG_LON = 111_320.0
@@ -227,6 +276,14 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             "living_street", "service", "motorway_link", "trunk_link", "primary_link", "secondary_link",
             "tertiary_link", "road",
         )
+
+        /** Diferença de rumos com sinal, de −π a π: positiva = girou para a direita (sentido horário). */
+        fun signedAngle(a: Float, b: Float): Float {
+            var d = (a - b) % (2 * PI).toFloat()
+            if (d > PI) d -= (2 * PI).toFloat()
+            if (d < -PI) d += (2 * PI).toFloat()
+            return d
+        }
 
         /** Diferença entre dois rumos, 0..π. */
         fun angleDiff(a: Float, b: Float): Float {
@@ -247,7 +304,7 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             val types = (DRIVABLE - "service").joinToString("|")
             return "[out:json][timeout:20][bbox:$bb];(" +
                 "way[highway~\"^($types)$\"];" +
-                "node[highway~\"^(crossing|traffic_signals|street_lamp)$\"];" +
+                "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
                 ");out body geom;"
         }
@@ -256,6 +313,7 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
         fun pointKind(tags: Map<String, String>): PointKind? = when {
             tags["traffic_calming"] != null && tags["traffic_calming"] != "no" &&
                 tags["traffic_calming"] != "island" && tags["traffic_calming"] != "choker" -> PointKind.BUMP
+            tags["highway"] == "speed_camera" -> PointKind.RADAR
             tags["highway"] == "traffic_signals" -> PointKind.SIGNAL
             tags["highway"] == "street_lamp" -> PointKind.LAMP
             tags["highway"] == "crossing" || tags["crossing"] != null -> PointKind.CROSSING
@@ -268,7 +326,7 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             val types = (DRIVABLE - "service").joinToString("|")
             return "[out:json][timeout:$timeout][bbox:$bb];(" +
                 "way[highway~\"^($types)$\"];" +
-                "node[highway~\"^(crossing|traffic_signals|street_lamp)$\"];" +
+                "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
                 ");out body geom;"
         }

@@ -497,6 +497,10 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
     /** Nome da rua e número de faixas (para o painel), ou null sem mapa. */
     var streetInfo: String? = null
+    /** O que vem à frente na rota (curva, radar, semáforo, lombada) em uma linha, ou null. */
+    var aheadInfo: String? = null
+        private set
+    private var aheadTimer = 0f
     /** Limite de velocidade (km/h) da rua onde o carro está, pelo maxspeed do OSM; null se não há. */
     var speedLimitKmh: Int? = null
         private set
@@ -687,6 +691,9 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val la = cc.lanesAhead(cc.segAt(carS))
         streetInfo = (w.tags["name"] ?: w.tags["ref"] ?: "rua sem nome") + " • $la faixa" + (if (la > 1) "s" else "")
         speedLimitKmh = SpeedLimit.parse(w.tags["maxspeed"])
+        // o que vem à frente: recalcula a cada meio segundo (não precisa de quadro a quadro)
+        aheadTimer -= dt
+        if (aheadTimer <= 0f) { aheadTimer = 0.5f; aheadInfo = m.describeAhead(cc) }
     }
 
     /** Apaga a malha do trecho e volta para a estrada genérica. */
@@ -695,6 +702,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         destroyGroup(e)
         cor = null
         streetInfo = null
+        aheadInfo = null
         speedLimitKmh = null
         for (ent in genericEnts) if (!scene.hasEntity(ent)) scene.addEntity(ent)
     }
@@ -833,6 +841,16 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
                     signalLights.wall(x - 0.12f, x + 0.12f, 4.0f, 4.22f, fz, rgba(2.2f, 0.08f, 0.05f))
                     signalLights.wall(x - 0.12f, x + 0.12f, 3.7f, 3.92f, fz, rgba(0.25f, 0.18f, 0.02f))
                     signalLights.wall(x - 0.12f, x + 0.12f, 3.4f, 3.62f, fz, rgba(0.02f, 0.2f, 0.06f))
+                }
+                OsmMap.PointKind.RADAR -> if (d < 40f) {
+                    // radar: poste fino com a caixa da câmera no alto, do lado da rua
+                    sample(c, ps, a)
+                    toFrame(pt.x, pt.y, p0)
+                    val side = if ((p0[0] - a[0]) * a[2] + (p0[1] - a[1]) * a[3] >= 0f) 1f else -1f
+                    val o = if (side > 0) ed[1] + 1.2f else ed[0] - 1.2f
+                    val x = a[0] + a[2] * o; val z = a[1] + a[3] * o
+                    poles.box(x - 0.06f, x + 0.06f, 0f, 3.4f, z - 0.06f, z + 0.06f, rgba(0.85f, 0.85f, 0.88f))
+                    poles.box(x - 0.3f, x + 0.3f, 3.2f, 3.6f, z - 0.14f, z + 0.14f, rgba(0.03f, 0.03f, 0.035f))
                 }
                 OsmMap.PointKind.LAMP -> if (d < 15f) {
                     sample(c, ps, a)

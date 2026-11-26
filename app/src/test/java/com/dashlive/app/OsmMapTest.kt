@@ -85,4 +85,41 @@ class OsmMapTest {
         assertEquals(50f, o[1], 0.1f)
         assertEquals(0f, o[2], 0.01f) // rumo norte
     }
+
+    @Test fun straightRoadHasNoTurnAhead() {
+        // a rua do mapa de mentira segue quase reta (5,7° no último trecho): nenhuma curva de 30°
+        val c = map.corridor(map.match(0f, 0f, 0f)!!)
+        assertNull(map.nextTurn(c))
+    }
+
+    @Test fun turnAheadIsRightAndWhere() {
+        // rua de (0, -100) a (0, 100) e depois para nordeste (45°): curva à direita a ~100 m
+        val m = OsmMap.parse("""{"elements":[
+            ${way(1, "\"highway\":\"residential\"", Triple(1, 0.0, -100.0), Triple(2, 0.0, 0.0), Triple(3, 0.0, 100.0))},
+            ${way(2, "\"highway\":\"residential\"", Triple(3, 0.0, 100.0), Triple(4, 100.0, 200.0))}
+        ]}""", 0.0, 0.0)
+        val c = m.corridor(m.match(0f, 0f, 0f)!!)
+        val t = m.nextTurn(c)!!
+        assertTrue(t.right)
+        assertTrue("curva a ${t.dist} m", t.dist in 100f..110f)
+        assertEquals(45f, t.deg, 3f)
+    }
+
+    @Test fun pointsAheadInOrder() {
+        // faixa de pedestre a 50 m e lombada a 70 m, ambas em cima da rua; nada atrás
+        val c = map.corridor(map.match(0f, 0f, 0f)!!)
+        val ahead = map.nextPoints(c)
+        assertEquals(OsmMap.PointKind.CROSSING, ahead[0].kind)
+        assertEquals(50f, ahead[0].dist, 0.5f)
+        assertEquals(OsmMap.PointKind.BUMP, ahead[1].kind)
+        assertEquals(70f, ahead[1].dist, 0.5f)
+        val desc = map.describeAhead(c)!!
+        assertTrue(desc, desc.contains("lombada em 70 m"))
+    }
+
+    @Test fun radarIsAPoint() {
+        val m = OsmMap.parse("""{"elements":[{"type":"node","id":20,"lat":${lat(30.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}}]}""", 0.0, 0.0)
+        assertEquals(1, m.points.size)
+        assertEquals(OsmMap.PointKind.RADAR, m.points[0].kind)
+    }
 }

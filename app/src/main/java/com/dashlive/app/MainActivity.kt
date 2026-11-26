@@ -138,7 +138,8 @@ class MainActivity : AppCompatActivity() {
                 val speed = b.roadView.speedKmh
                 val stopAhead = roadDetector?.stopSignSeenAt?.let { it > 0 && SystemClock.elapsedRealtime() - it < 2000 } == true
                 val hot = if (thermalLevel() >= 3) "aparelho quente, detecção reduzida • " else ""
-                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "")
+                val ahead = b.road3d.aheadInfo?.let { " • $it" } ?: ""
+                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "") + ahead
                 b.roadView.mapStatus = when {
                     limit == null -> base
                     speed != null && speed > limit + 3 -> "$base • ACIMA DO LIMITE ($limit km/h)"
@@ -148,7 +149,7 @@ class MainActivity : AppCompatActivity() {
                 if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
                 // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
                 // (na rota de teste a velocidade vem da rota, não do GPS)
-                if (gpsOn && !obdFresh && !fakeMap && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+                if (gpsOn && !obdFresh && !fakeMap && !replaying && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
             }
             if (roadDemo) {
                 val t = SystemClock.uptimeMillis() / 1000f
@@ -303,6 +304,8 @@ class MainActivity : AppCompatActivity() {
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnRoad.setOnClickListener { toggleRoad() }
+        // segurar o botão Estrada: reproduz uma viagem gravada (ou para a reprodução)
+        b.btnRoad.setOnLongClickListener { showTrips(); true }
         phoneCamMode = BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)
         if (phoneCamMode) useNative = true // o detector e o vídeo andam pelo caminho nativo
         roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
@@ -1320,6 +1323,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleRoad() {
         roadMode = !roadMode
+        if (roadMode) startRecorder() else { stopRecorder(); stopReplay() }
         if (roadMode) updateDay() // define dia/noite já ao abrir (para o modo noturno)
         applyNightDim()
         if (!phone) b.overlay.visibility = if (roadMode || b.livePill.visibility == View.VISIBLE) View.GONE else View.VISIBLE
@@ -1537,12 +1541,16 @@ class MainActivity : AppCompatActivity() {
             }
             lastFixAt = SystemClock.elapsedRealtime()
             // rua real na Estrada 3D: posição (rumo só andando; parado o GPS inventa direção)
-            if (!fakeMap) {
-                b.road3d.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null)
+            val bearing = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
+            // na reprodução a posição vem da viagem gravada, não do GPS
+            if (!fakeMap && !replaying) {
+                b.road3d.onLocation(loc.latitude, loc.longitude, bearing)
                 feedMap(loc.latitude, loc.longitude)
             }
+            // grava o ponto da viagem (a Estrada aberta; o TripRecorder guarda 1 por segundo)
+            if (!replaying) recorder?.add(System.currentTimeMillis(), loc.latitude, loc.longitude, if (loc.hasSpeed()) loc.speed * 3.6f else null, bearing)
             // com o OBD2 conectado, a velocidade do carro tem prioridade (mais precisa e sem atraso)
-            if (loc.hasSpeed() && !obdFresh && !fakeMap) {
+            if (loc.hasSpeed() && !obdFresh && !fakeMap && !replaying) {
                 b.roadView.speedKmh = loc.speed * 3.6f
                 egoKmh = loc.speed * 3.6f; egoAt = SystemClock.elapsedRealtime()
             }
@@ -1575,6 +1583,76 @@ class MainActivity : AppCompatActivity() {
         if (gpsOn) runCatching { lm.removeUpdates(gpsListener) }
         gpsOn = false
         b.roadView.speedKmh = null
+    }
+
+    // ---------------------------------------------------------------- viagens gravadas (replay)
+
+    private val tripsDir by lazy { File(getExternalFilesDir(null), "viagens").apply { mkdirs() } }
+    private var recorder: TripRecorder? = null
+    private var replaying = false
+    private var tripTrack: TripLog.Track? = null
+    private var tripStartAt = 0L
+
+    /** Grava a viagem enquanto a Estrada está aberta; sem nenhum ponto, o arquivo é apagado. */
+    private fun startRecorder() {
+        if (recorder != null) return
+        val now = System.currentTimeMillis()
+        runCatching { recorder = TripRecorder(File(tripsDir, TripLog.fileName(now)), now) }
+            .onFailure { android.util.Log.w("DashLive", "viagem não gravada: ${it.message}") }
+    }
+
+    private fun stopRecorder() {
+        val r = recorder ?: return
+        recorder = null
+        r.stop()
+        if (r.points == 0) r.file.delete()
+    }
+
+    private val tripTick = object : Runnable {
+        override fun run() {
+            val tr = tripTrack ?: return
+            val p = tr.at(SystemClock.elapsedRealtime() - tripStartAt)
+            if (p == null) { stopReplay(); toast("Fim da viagem gravada"); return }
+            b.road3d.onLocation(p.lat, p.lon, p.bearing?.takeIf { (p.speedKmh ?: 0f) > 1.5f })
+            feedMap(p.lat, p.lon)
+            p.speedKmh?.let { b.roadView.speedKmh = it; egoKmh = it; egoAt = SystemClock.elapsedRealtime() }
+            handler.postDelayed(this, 250)
+        }
+    }
+
+    /** Abre a Estrada e anda pela viagem gravada, com o mapa e a velocidade daquele dia. */
+    private fun startReplay(f: File) {
+        val tr = runCatching { TripLog.Track.load(f) }.getOrNull()
+        if (tr == null || tr.durationMs <= 0L) { toast("Viagem sem pontos: ${f.name}"); return }
+        if (!roadMode) toggleRoad()
+        stopSpeed() // o GPS real não entra na reprodução
+        replaying = true
+        tripTrack = tr
+        tripStartAt = SystemClock.elapsedRealtime()
+        handler.removeCallbacks(tripTick)
+        handler.post(tripTick)
+        toast("Reproduzindo ${f.name.removePrefix("viagem_").removeSuffix(".csv")}")
+    }
+
+    private fun stopReplay() {
+        replaying = false
+        tripTrack = null
+        handler.removeCallbacks(tripTick)
+    }
+
+    private fun showTrips() {
+        if (replaying) {
+            AlertDialog.Builder(this).setTitle("Reproduzindo uma viagem")
+                .setPositiveButton("Parar") { _, _ -> stopReplay() }
+                .setNegativeButton("Fechar", null).show()
+            return
+        }
+        val files = TripLog.list(tripsDir)
+        if (files.isEmpty()) { toast("Nenhuma viagem gravada: abra a Estrada com o GPS ligado"); return }
+        val names = files.map { it.nameWithoutExtension.removePrefix("viagem_") }.toTypedArray<CharSequence>()
+        AlertDialog.Builder(this).setTitle("Reproduzir viagem")
+            .setItems(names) { _, i -> startReplay(files[i]) }
+            .setNegativeButton("Cancelar", null).show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
