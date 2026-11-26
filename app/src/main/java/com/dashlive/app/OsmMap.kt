@@ -26,6 +26,10 @@ class OsmMap(
     val points: List<Point>,
     /** Prédios (contorno no plano local e altura em metros); vazio quando o mapa veio sem prédios. */
     val buildings: List<Building> = emptyList(),
+    /** Árvores (x, y) no plano local. */
+    val trees: List<FloatArray> = emptyList(),
+    /** Muros e cercas (contorno aberto e altura em metros). */
+    val walls: List<Wall> = emptyList(),
 ) {
 
     enum class PointKind { CROSSING, BUMP, SIGNAL, LAMP, RADAR }
@@ -34,6 +38,9 @@ class OsmMap(
 
     /** Prédio: contorno fechado (x, y), id do OSM e altura em metros. */
     class Building(val id: Long, val xy: FloatArray, val height: Float)
+
+    /** Muro ou cerca: linha (x, y) e altura em metros. */
+    class Wall(val xy: FloatArray, val height: Float)
 
     class Way(val id: Long, val nodes: LongArray, val xy: FloatArray, val tags: Map<String, String>) {
         val highway = tags["highway"] ?: ""
@@ -321,6 +328,8 @@ class OsmMap(
                 "way[building];" +
                 "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
+                "node[natural=tree];" +
+                "way[barrier~\"^(wall|fence)$\"];" +
                 ");out body geom;"
         }
 
@@ -360,6 +369,8 @@ class OsmMap(
             val ways = ArrayList<Way>()
             val pts = ArrayList<Point>()
             val bldgs = ArrayList<Building>()
+            val trees = ArrayList<FloatArray>()
+            val walls = ArrayList<Wall>()
             val kx = cos(Math.toRadians(refLat)) * M_PER_DEG_LON
             for (i in 0 until els.length()) {
                 val e = els.getJSONObject(i)
@@ -381,6 +392,11 @@ class OsmMap(
                             bldgs += Building(e.getLong("id"), xy, buildingHeight(tags))
                             continue
                         }
+                        if (tags["barrier"] == "wall" || tags["barrier"] == "fence") {
+                            val h = tags["height"]?.let { Regex("""\d+(\.\d+)?""").find(it)?.value?.toFloatOrNull() }
+                            walls += Wall(xy, h ?: if (tags["barrier"] == "wall") 2f else 1.2f)
+                            continue
+                        }
                         // curvas suaves (o OSM tem pontos em zigue-zague); mesmo número de pontos
                         smoothLine(xy)
                         ways += Way(e.getLong("id"), LongArray(nodes.length()) { nodes.getLong(it) }, xy, tags)
@@ -388,12 +404,13 @@ class OsmMap(
                     "node" -> {
                         val x = ((e.getDouble("lon") - refLon) * kx).toFloat()
                         val y = ((e.getDouble("lat") - refLat) * M_PER_DEG_LAT).toFloat()
+                        if (tags["natural"] == "tree") { trees += floatArrayOf(x, y); continue }
                         val kind = pointKind(tags) ?: continue
                         pts += Point(x, y, kind)
                     }
                 }
             }
-            return OsmMap(refLat, refLon, ways, pts, bldgs)
+            return OsmMap(refLat, refLon, ways, pts, bldgs, trees, walls)
         }
     }
 }

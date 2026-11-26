@@ -727,6 +727,36 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     }
 
     /** Monta a malha do trecho inteiro no referencial do ponto onde o carro está agora (s = 0). */
+    /** Janelas de um lado de prédio: uma por 3 m de parede e por andar, um pouco para fora da parede. */
+    private fun addWindows(m: Mesh, ax: Float, az: Float, bx: Float, bz: Float, h: Float, ccx: Float, ccz: Float) {
+        val dx = bx - ax; val dz = bz - az
+        val len = kotlin.math.sqrt(dx * dx + dz * dz)
+        if (len < 2.5f) return
+        val ux = dx / len; val uz = dz / len
+        // normal para fora: a que aponta para longe do centro do prédio
+        var nx = -uz; var nz = ux
+        val mx = (ax + bx) / 2f - ccx; val mz = (az + bz) / 2f - ccz
+        if (nx * mx + nz * mz < 0f) { nx = -nx; nz = -nz }
+        val ox = nx * 0.04f; val oz = nz * 0.04f
+        val floors = (h / 3f).toInt().coerceIn(1, 12)
+        var t = 1.0f
+        while (t + 1.3f < len - 0.6f) {
+            for (f in 0 until floors) {
+                val y0 = 1.0f + f * 3.0f
+                val y1 = y0 + 1.5f
+                if (y1 > h - 0.5f) break
+                val t1 = t + 1.3f
+                m.quad(floatArrayOf(
+                    ax + ux * t + ox, y0, az + uz * t + oz,
+                    ax + ux * t1 + ox, y0, az + uz * t1 + oz,
+                    ax + ux * t1 + ox, y1, az + uz * t1 + oz,
+                    ax + ux * t + ox, y1, az + uz * t + oz,
+                ), WINDOW_COLOR)
+            }
+            t += 3.0f
+        }
+    }
+
     private fun buildMapRoad() {
         val e = engine ?: return
         val c = cor ?: return
@@ -911,7 +941,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
         // prédios do OSM perto do carro: paredes com a cor do prédio, telhado escuro
         if (buildingMi == null) buildingMi = material(1f, 1f, 1f, unlit = false, rough = 0.85f)
-        val walls = Mesh(); val roofs = Mesh()
+        val walls = Mesh(); val roofs = Mesh(); val windows = Mesh()
         val p = FloatArray(2)
         for (bd in m.buildings) {
             val n = bd.xy.size / 2 - 1 // o contorno do OSM fecha no primeiro ponto
@@ -919,7 +949,9 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             var cx = 0f; var cy = 0f
             for (i in 0 until n) { cx += bd.xy[i * 2]; cy += bd.xy[i * 2 + 1] }
             toFrame(cx / n, cy / n, p)
-            if (kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1]) > BUILD_RANGE) continue // a cidade toda pesaria demais
+            val ccx = p[0]; val ccz = p[1]
+            val dist = kotlin.math.sqrt(ccx * ccx + ccz * ccz)
+            if (dist > BUILD_RANGE) continue // a cidade toda pesaria demais
             val fx = FloatArray(n * 2)
             for (i in 0 until n) { toFrame(bd.xy[i * 2], bd.xy[i * 2 + 1], p); fx[i * 2] = p[0]; fx[i * 2 + 1] = p[1] }
             val h = bd.height
@@ -927,6 +959,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             for (i in 0 until n) {
                 val j = (i + 1) % n
                 walls.quad(floatArrayOf(fx[i * 2], 0f, fx[i * 2 + 1], fx[j * 2], 0f, fx[j * 2 + 1], fx[j * 2], h, fx[j * 2 + 1], fx[i * 2], h, fx[i * 2 + 1]), col)
+                if (dist <= WINDOW_RANGE) addWindows(windows, fx[i * 2], fx[i * 2 + 1], fx[j * 2], fx[j * 2 + 1], h, ccx, ccz)
             }
             // telhado em leque (bom para prédios convexos; os côncavos ficam com um furo, aceitável)
             for (i in 1 until n - 1) {
@@ -935,6 +968,31 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         }
         if (walls.pos.isNotEmpty()) renderable(e, walls, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
         if (roofs.pos.isNotEmpty()) renderable(e, roofs, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (windows.pos.isNotEmpty()) renderable(e, windows, buildingMi!!, group = mapGroup, parent = roadRoot)
+
+        // árvores (tronco + copa) e muros/cercas do OSM perto do carro
+        val trunks = Mesh(); val canopies = Mesh(); val fence = Mesh()
+        for (t in m.trees) {
+            toFrame(t[0], t[1], p)
+            if (kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1]) > TREE_RANGE) continue
+            // tamanho variando de árvore para árvore (pela posição, sempre o mesmo)
+            val seed = ((t[0] * 97f + t[1] * 31f) % 1f + 1f) % 1f
+            val k = 0.85f + 0.4f * seed
+            val x = p[0]; val z = p[1]
+            trunks.box(x - 0.14f, x + 0.14f, 0f, 2.4f * k, z - 0.14f, z + 0.14f, rgba(0.34f, 0.23f, 0.14f))
+            canopies.box(x - 1.7f * k, x + 1.7f * k, 2.2f * k, 4.4f * k, z - 1.7f * k, z + 1.7f * k, rgba(0.2f + 0.08f * seed, 0.38f, 0.15f))
+        }
+        for (w in m.walls) {
+            val nn = w.xy.size / 2
+            for (i in 0 until nn - 1) {
+                toFrame(w.xy[i * 2], w.xy[i * 2 + 1], p0); toFrame(w.xy[(i + 1) * 2], w.xy[(i + 1) * 2 + 1], p1)
+                if (kotlin.math.min(kotlin.math.sqrt(p0[0] * p0[0] + p0[1] * p0[1]), kotlin.math.sqrt(p1[0] * p1[0] + p1[1] * p1[1])) > WALL_RANGE) continue
+                fence.quad(floatArrayOf(p0[0], 0f, p0[1], p1[0], 0f, p1[1], p1[0], w.height, p1[1], p0[0], w.height, p0[1]), WALL_COLOR)
+            }
+        }
+        if (trunks.pos.isNotEmpty()) renderable(e, trunks, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (canopies.pos.isNotEmpty()) renderable(e, canopies, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (fence.pos.isNotEmpty()) renderable(e, fence, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
 
         // luzes de verdade só nos 8 postes mais próximos à frente (luz custa caro)
         val tm = e.transformManager
@@ -1393,6 +1451,12 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         private fun rgba(r: Float, g: Float, b: Float, a: Float = 1f) = floatArrayOf(r, g, b, a)
         /** Prédios até esta distância (m) do carro entram na malha. */
         private const val BUILD_RANGE = 260f
+        /** Janelas só nos prédios até esta distância (são muitas). */
+        private const val WINDOW_RANGE = 120f
+        private const val TREE_RANGE = 180f
+        private const val WALL_RANGE = 180f
+        private val WINDOW_COLOR = rgba(0.1f, 0.13f, 0.17f)
+        private val WALL_COLOR = rgba(0.62f, 0.6f, 0.56f)
         private val ROOF_COLOR = rgba(0.3f, 0.3f, 0.32f)
         /** Cores de parede (reboco, tijolo, cinza, bege); cada prédio pega uma pelo id. */
         private val BUILD_COLORS = arrayOf(

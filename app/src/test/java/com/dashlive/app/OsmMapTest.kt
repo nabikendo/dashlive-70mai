@@ -145,4 +145,18 @@ class OsmMapTest {
         assertEquals(10f, m.buildings[0].height, 0.01f)
         assertEquals(4, m.buildings[0].xy.size / 2)
     }
+
+    @Test fun parsesTreesAndWalls() {
+        val m = OsmMap.parse("""{"elements":[
+            {"type":"node","id":50,"lat":${lat(5.0)},"lon":${lon(3.0)},"tags":{"natural":"tree"}},
+            ${way(51, "\"barrier\":\"wall\"", Triple(52, 0.0, 0.0), Triple(53, 20.0, 0.0))},
+            ${way(54, "\"barrier\":\"fence\",\"height\":\"1.5 m\"", Triple(55, 0.0, 5.0), Triple(56, 20.0, 5.0))}
+        ]}""", 0.0, 0.0)
+        assertEquals(1, m.trees.size)
+        assertEquals(3f, m.trees[0][0], 0.01f)
+        assertEquals(2, m.walls.size)
+        assertEquals(2f, m.walls[0].height, 0.01f)
+        assertEquals(1.5f, m.walls[1].height, 0.01f)
+        assertEquals(0, m.points.size)
+    }
 }
