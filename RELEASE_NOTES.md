@@ -1,3 +1,18 @@
+## DashLive 1.12.0
+
+Avisos de estrada, viagens gravadas, cena 3D mais detalhada e novas opções de câmera.
+
+- **Avisos à frente.** A barra da Estrada mostra a próxima curva, radares, semáforos e lombadas, com a distância.
+- **Bipes de limite e radar.** Um bipe ao passar do limite de velocidade e dois bipes ao chegar a 300 m de um radar. Usam o volume do aviso de colisão e não tocam no modo silencioso.
+- **Velocidade parado.** O ruído do GPS com o carro parado não aparece mais como velocidade.
+- **Viagens gravadas.** Com a Estrada aberta, a viagem é gravada. Segure o botão Estrada para ver a lista (distância, média e tempo parado) e reproduzir uma viagem com o mapa.
+- **Cena 3D.** Prédios com janelas, árvores, muros e cercas do OpenStreetMap, com sombra do sol. Os mapas offline baixados a partir desta versão também trazem esses detalhes.
+- **Alternar câmeras.** Em Câmeras, "Alternar frontal e traseira" troca a lente a cada 3, 5 ou 10 s, também com a Estrada aberta.
+- **Estado da câmera.** O selo mostra "AO VIVO • REC" quando a câmera está gravando e "SEM GRAVAR" quando não está. Se o app oficial trocar a lente, o DashLive volta para a lente escolhida. Sem a traseira conectada, o menu avisa.
+- **Câmera do celular (teste).** Em Câmeras, a câmera traseira do celular pode ser usada no lugar da A200.
+
+Limitações conhecidas: os bipes, a gravação e o replay ainda não foram testados com o carro andando. Os detalhes 3D só aparecem onde o OpenStreetMap tem prédios e árvores mapeados.
+
 ## DashLive 1.11.0
 
 Estrada com rastreamento mais estável e avisos de rua.
