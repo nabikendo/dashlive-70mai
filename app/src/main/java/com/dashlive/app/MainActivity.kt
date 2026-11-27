@@ -146,8 +146,8 @@ class MainActivity : AppCompatActivity() {
                 if (radarAlarm.update(b.road3d.nearestRadarM)) adas?.playSpeedAlert(radar = true)
                 b.roadView.mapStatus = when {
                     limit == null -> base
-                    speed != null && speed > limit + 3 -> "$base • ACIMA DO LIMITE ($limit km/h)"
-                    else -> "$base • limite $limit km/h"
+                    speed != null && speed > limit + 3 -> listOf("ACIMA DO LIMITE ($limit km/h)", base).filter { it.isNotBlank() }.joinToString(" • ")
+                    else -> listOf("limite $limit km/h", base).filter { it.isNotBlank() }.joinToString(" • ")
                 }
                 // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
                 if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
@@ -984,7 +984,7 @@ class MainActivity : AppCompatActivity() {
         // ao vivo com a A200: pergunta à câmera se está gravando e qual lente está ativa (a cada 10 s)
         handler.removeCallbacks(dvrTick)
         if (live && !phoneCamMode && customUrl.isBlank()) handler.post(dvrTick) else applyDvr(null)
-        b.overlay.visibility = if (live || (roadMode && !phone)) View.GONE else View.VISIBLE
+        b.overlay.visibility = if (live || replaying || (roadMode && !phone)) View.GONE else View.VISIBLE
         b.overlay.text = "$title\n$subtitle"
     }
 
@@ -1676,9 +1676,10 @@ class MainActivity : AppCompatActivity() {
             lastFixAt = SystemClock.elapsedRealtime()
             // rua real na Estrada 3D: posição (rumo só andando; parado o GPS inventa direção)
             val bearing = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
+            if (bearing != null && !replaying) lastBearing = bearing
             // na reprodução a posição vem da viagem gravada, não do GPS
             if (!fakeMap && !replaying) {
-                b.road3d.onLocation(loc.latitude, loc.longitude, bearing)
+                b.road3d.onLocation(loc.latitude, loc.longitude, bearing ?: lastBearing)
                 feedMap(loc.latitude, loc.longitude)
             }
             // velocidade limpa: parado (ou com erro maior que o valor) vira 0, sem bipe de limite à toa
@@ -1728,6 +1729,8 @@ class MainActivity : AppCompatActivity() {
     private val tripsDir by lazy { File(getExternalFilesDir(null), "viagens").apply { mkdirs() } }
     private var recorder: TripRecorder? = null
     private var replaying = false
+    /** Último rumo conhecido (graus): parado, o GPS não dá rumo e a cena não deve virar de lado. */
+    private var lastBearing: Float? = null
     private var tripTrack: TripLog.Track? = null
     private var tripStartAt = 0L
 
@@ -1754,7 +1757,9 @@ class MainActivity : AppCompatActivity() {
             val tr = tripTrack ?: return
             val p = tr.at(SystemClock.elapsedRealtime() - tripStartAt)
             if (p == null) { stopReplay(); toast("Fim da viagem gravada"); return }
-            b.road3d.onLocation(p.lat, p.lon, p.bearing?.takeIf { (p.speedKmh ?: 0f) > 1.5f })
+            // rumo gravado (só existe andando); parado, fica o último
+            p.bearing?.let { lastBearing = it }
+            b.road3d.onLocation(p.lat, p.lon, p.bearing ?: lastBearing)
             feedMap(p.lat, p.lon)
             p.speedKmh?.let { b.roadView.speedKmh = it; egoKmh = it; egoAt = SystemClock.elapsedRealtime() }
             handler.postDelayed(this, 250)
@@ -1768,6 +1773,8 @@ class MainActivity : AppCompatActivity() {
         if (!roadMode) toggleRoad()
         stopSpeed() // o GPS real não entra na reprodução
         replaying = true
+        lastBearing = null
+        b.overlay.visibility = View.GONE // "Fora do Wi-Fi da câmera" não interessa na reprodução
         tripTrack = tr
         tripStartAt = SystemClock.elapsedRealtime()
         handler.removeCallbacks(tripTick)
@@ -1776,9 +1783,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopReplay() {
+        if (!replaying) return
         replaying = false
         tripTrack = null
         handler.removeCallbacks(tripTick)
+        // volta a mostrar o estado da câmera se não está ao vivo
+        if (b.livePill.visibility != View.VISIBLE && !(roadMode && !phone)) b.overlay.visibility = View.VISIBLE
     }
 
     private fun showTrips() {

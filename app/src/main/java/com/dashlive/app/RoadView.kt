@@ -862,10 +862,15 @@ class RoadView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : 
         } else {
             mapStatus ?: "estimativa"
         }
-        cv.drawText(
-            info,
-            x0 + pad, rect.bottom - pad + 2f * dp, p,
-        )
+        // não passa da borda do cartão (os botões ficam logo ao lado): corta com "…"
+        cv.drawText(fitText(info, rect.right - pad - (x0 + pad)), x0 + pad, rect.bottom - pad + 2f * dp, p)
+    }
+
+    /** O texto inteiro se couber em [maxW] px; senão, o começo com "…" no fim. */
+    private fun fitText(text: String, maxW: Float): String {
+        if (maxW <= 0f || p.measureText(text) <= maxW) return text
+        val n = p.breakText(text, true, maxW - p.measureText("…"), null)
+        return text.take(n).trimEnd(' ', '•') + "…"
     }
 
     /** Mensagem no meio da tela, quebrando linha para caber (erros podem ser longos). */
