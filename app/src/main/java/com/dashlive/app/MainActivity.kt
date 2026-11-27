@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
                 if (radarAlarm.update(b.road3d.nearestRadarM)) adas?.playSpeedAlert(radar = true)
                 b.roadView.mapStatus = when {
                     limit == null -> base
-                    speed != null && speed > limit + 3 -> listOf("ACIMA DO LIMITE ($limit km/h)", base).filter { it.isNotBlank() }.joinToString(" • ")
+                    speed != null && speed > limit + 3 -> listOf("ACIMA DE $limit km/h", base).filter { it.isNotBlank() }.joinToString(" • ")
                     else -> listOf("limite $limit km/h", base).filter { it.isNotBlank() }.joinToString(" • ")
                 }
                 // teste: o carro "anda sozinho" pela rua do mapa; pede mais mapa quando sai da área
@@ -1775,8 +1775,12 @@ class MainActivity : AppCompatActivity() {
     private fun startReplay(f: File) {
         val tr = runCatching { TripLog.Track.load(f) }.getOrNull()
         if (tr == null || tr.durationMs <= 0L) { toast("Viagem sem pontos: ${f.name}"); return }
-        if (!roadMode) toggleRoad()
+        val openedHere = !roadMode
+        if (openedHere) toggleRoad()
         stopSpeed() // o GPS real não entra na reprodução
+        // a reprodução não é uma viagem nova: se a Estrada abriu agora, descarta o que ela começou a
+        // gravar; se já estava aberta (viagem de verdade em andamento), só encerra a gravação
+        if (openedHere) recorder?.let { r -> recorder = null; r.stop(); r.file.delete() } else stopRecorder()
         replaying = true
         lastBearing = null
         b.overlay.visibility = View.GONE // "Fora do Wi-Fi da câmera" não interessa na reprodução
