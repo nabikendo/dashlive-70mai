@@ -38,8 +38,11 @@ object TripLog {
     fun fileName(nowMs: Long): String =
         "viagem_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(nowMs)) + ".csv"
 
-    /** Viagens gravadas na pasta, da mais nova para a mais antiga. */
-    fun list(dir: File): List<File> = dir.listFiles { f -> f.name.startsWith("viagem_") && f.name.endsWith(".csv") }
+    /**
+     * Viagens gravadas na pasta, da mais nova para a mais antiga. Arquivo vazio (o app fechou antes do
+     * primeiro ponto) fica de fora.
+     */
+    fun list(dir: File): List<File> = dir.listFiles { f -> f.name.startsWith("viagem_") && f.name.endsWith(".csv") && f.length() > 0 }
         ?.sortedByDescending { it.name }.orEmpty()
 
     /** Resumo de uma viagem: distância, tempo andando e parado, média e máxima (km/h). */

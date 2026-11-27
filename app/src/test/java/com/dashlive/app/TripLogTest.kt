@@ -64,4 +64,14 @@ class TripLogTest {
         val s = TripLog.Summary(distanceM = 12_400.0, movingMs = 600_000L, stoppedMs = 180_000L, avgKmh = 45.2f, maxKmh = 80f)
         assertEquals("12,4 km • média 45 km/h • parado 3 min", TripLog.summaryText(s))
     }
+
+    @Test fun listSkipsEmptyFiles() {
+        val dir = kotlin.io.path.createTempDirectory("viagens").toFile()
+        File(dir, "viagem_20261127_190512.csv").writeText("")
+        File(dir, "viagem_20261127_235900.csv").writeText(TripLog.HEADER + "\n0,-23.5,-46.6,0.0,\n")
+        File(dir, "outra_coisa.csv").writeText("x")
+        val names = TripLog.list(dir).map { it.name }
+        assertEquals(listOf("viagem_20261127_235900.csv"), names)
+        dir.deleteRecursively()
+    }
 }
