@@ -53,4 +53,41 @@ object CameraApi {
         Log.w("DashLive", "troca de lente falhou: ${e.message}")
         false
     }
+
+    /**
+     * Estado da câmera por `getdvrstate.cgi` (funciona sem pareamento; testado na A200 em 27/11/2026):
+     * `{"rec":"1","backcam":"1","sensor":"0","parking":"0","timelapse":"0"}`.
+     */
+    data class DvrState(val recording: Boolean, val rearConnected: Boolean, val rearActive: Boolean, val parking: Boolean) {
+        companion object {
+            /** Lê a resposta; null se não for ResultCode 0 ou não for JSON. */
+            fun parse(body: String): DvrState? = try {
+                val o = org.json.JSONObject(body.substring(body.indexOf('{')))
+                if (o.optString("ResultCode") != "0") null else {
+                    val r = o.getJSONObject("Result")
+                    DvrState(
+                        recording = r.optString("rec") == "1",
+                        rearConnected = r.optString("backcam") == "1",
+                        rearActive = r.optString("sensor") == "1",
+                        parking = r.optString("parking") == "1",
+                    )
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /** Pergunta o estado à câmera (gravando, traseira ligada, lente ativa); null se não respondeu. */
+    fun dvrState(ip: String): DvrState? = try {
+        val c = URL("http://$ip/cgi-bin/getdvrstate.cgi").openConnection() as HttpURLConnection
+        c.connectTimeout = 2000
+        c.readTimeout = 2500
+        val body = c.inputStream.bufferedReader().use { it.readText() }
+        c.disconnect()
+        DvrState.parse(body)
+    } catch (e: Exception) {
+        Log.w("DashLive", "estado da câmera falhou: ${e.message}")
+        null
+    }
 }

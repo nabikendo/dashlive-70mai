@@ -597,7 +597,15 @@ class MainActivity : AppCompatActivity() {
 
     /** Botão Câmeras: frontal ou traseira (troca a lente na câmera); endereços RTSP ficam no "avançado". */
     private fun pickCamera() {
-        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)", "Celular: câmera traseira (teste)", "Alternar frontal e traseira")
+        // getdvrstate diz se a traseira está ligada na câmera
+        val rearOff = dvr?.rearConnected == false
+        val items = arrayOf(
+            "Câmera frontal",
+            if (rearOff) "Câmera traseira (desconectada)" else "Câmera traseira",
+            "Endereço de vídeo (avançado)",
+            "Celular: câmera traseira (teste)",
+            if (rearOff) "Alternar frontal e traseira (traseira desconectada)" else "Alternar frontal e traseira",
+        )
         val cur = when {
             altLens -> 4
             phoneCamMode -> 3
@@ -610,6 +618,7 @@ class MainActivity : AppCompatActivity() {
             .setSingleChoiceItems(items, cur) { d, which ->
                 d.dismiss()
                 if (which == 2) { pickSource(main = true); return@setSingleChoiceItems }
+                if (rearOff && (which == 1 || which == 4)) { toast("A câmera traseira não está conectada na A200"); return@setSingleChoiceItems }
                 if (which == 3) { usePhoneCam(); return@setSingleChoiceItems }
                 if (which == 4) { pickAltInterval(); return@setSingleChoiceItems }
                 stopAlternating()
@@ -686,6 +695,39 @@ class MainActivity : AppCompatActivity() {
         startPlayback()
         if (roadMode) { roadMode = false; toggleRoad() } // reaplica a Estrada para a fonte nova
         else restartDetect()
+    }
+
+    /** Último estado lido da câmera (`getdvrstate.cgi`); null = não sabe. */
+    @Volatile private var dvr: CameraApi.DvrState? = null
+
+    private val dvrTick = object : Runnable {
+        override fun run() {
+            if (phoneCamMode || customUrl.isNotBlank() || offCameraWifi) return
+            val ip = camIp
+            Thread {
+                val st = CameraApi.dvrState(ip)
+                runOnUiThread { applyDvr(st) }
+            }.start()
+            handler.postDelayed(this, 10_000L)
+        }
+    }
+
+    /** Mostra se a câmera está gravando e corrige a lente se ela estiver diferente da escolhida. */
+    private fun applyDvr(st: CameraApi.DvrState?) {
+        dvr = st
+        b.liveText.text = when {
+            st == null -> "AO VIVO"
+            !st.recording -> "AO VIVO • SEM GRAVAR"
+            else -> "AO VIVO • REC"
+        }
+        // o app oficial (ou outro aparelho) trocou a lente: volta para a escolhida no DashLive.
+        // Na alternância a lente muda de propósito; sem traseira conectada não há o que trocar.
+        if (st != null && !altLens && st.rearConnected && st.rearActive != rearNow) {
+            val ip = camIp
+            val rear = rearNow
+            android.util.Log.i("DashLive", "lente diferente na câmera; voltando para a ${if (rear) "traseira" else "frontal"}")
+            Thread { CameraApi.setLens(ip, rear) }.start()
+        }
     }
 
     private fun lensName() = when {
@@ -939,6 +981,9 @@ class MainActivity : AppCompatActivity() {
         )
         val live = state == State.LIVE
         b.livePill.visibility = if (live) View.VISIBLE else View.GONE
+        // ao vivo com a A200: pergunta à câmera se está gravando e qual lente está ativa (a cada 10 s)
+        handler.removeCallbacks(dvrTick)
+        if (live && !phoneCamMode && customUrl.isBlank()) handler.post(dvrTick) else applyDvr(null)
         b.overlay.visibility = if (live || (roadMode && !phone)) View.GONE else View.VISIBLE
         b.overlay.text = "$title\n$subtitle"
     }
