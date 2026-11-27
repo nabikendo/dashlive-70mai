@@ -138,8 +138,13 @@ class MainActivity : AppCompatActivity() {
                 val speed = b.roadView.speedKmh
                 val stopAhead = roadDetector?.stopSignSeenAt?.let { it > 0 && SystemClock.elapsedRealtime() - it < 2000 } == true
                 val hot = if (thermalLevel() >= 3) "aparelho quente, detecção reduzida • " else ""
-                val ahead = b.road3d.aheadInfo?.let { " • $it" } ?: ""
-                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "") + ahead
+                // ordem de importância (o fim é cortado com "…" se não couber): avisos, o que vem à frente, a rua
+                val base = listOfNotNull(
+                    hot.removeSuffix(" • ").takeIf { it.isNotBlank() },
+                    if (stopAhead) "PARE à frente" else null,
+                    b.road3d.aheadInfo,
+                    b.road3d.streetInfo ?: mapState,
+                ).joinToString(" • ")
                 // avisos sonoros: passou do limite (um bipe) e radar que se aproxima (dois bipes)
                 val nowMs = SystemClock.elapsedRealtime()
                 if (speedAlarm.update(nowMs, speed, limit)) adas?.playSpeedAlert(radar = false)
