@@ -138,7 +138,12 @@ class MainActivity : AppCompatActivity() {
                 val speed = b.roadView.speedKmh
                 val stopAhead = roadDetector?.stopSignSeenAt?.let { it > 0 && SystemClock.elapsedRealtime() - it < 2000 } == true
                 val hot = if (thermalLevel() >= 3) "aparelho quente, detecção reduzida • " else ""
-                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "")
+                val ahead = b.road3d.aheadInfo?.let { " • $it" } ?: ""
+                val base = hot + (if (stopAhead) "PARE à frente • " else "") + (b.road3d.streetInfo ?: mapState ?: "") + ahead
+                // avisos sonoros: passou do limite (um bipe) e radar que se aproxima (dois bipes)
+                val nowMs = SystemClock.elapsedRealtime()
+                if (speedAlarm.update(nowMs, speed, limit)) adas?.playSpeedAlert(radar = false)
+                if (radarAlarm.update(b.road3d.nearestRadarM)) adas?.playSpeedAlert(radar = true)
                 b.roadView.mapStatus = when {
                     limit == null -> base
                     speed != null && speed > limit + 3 -> "$base • ACIMA DO LIMITE ($limit km/h)"
@@ -148,7 +153,7 @@ class MainActivity : AppCompatActivity() {
                 if (roadDemo && routeSim == null && SystemClock.uptimeMillis() % 3000 < 90) b.road3d.carLatLon()?.let { feedMap(it.first, it.second) }
                 // sem posição nova há 4 s (túnel, garagem): não mostra velocidade velha
                 // (na rota de teste a velocidade vem da rota, não do GPS)
-                if (gpsOn && !obdFresh && !fakeMap && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
+                if (gpsOn && !obdFresh && !fakeMap && !replaying && SystemClock.elapsedRealtime() - lastFixAt > 4000) b.roadView.speedKmh = null
             }
             if (roadDemo) {
                 val t = SystemClock.uptimeMillis() / 1000f
@@ -215,8 +220,17 @@ class MainActivity : AppCompatActivity() {
         set(v) = prefs.edit().putInt("autoRearHold", v).apply()
     /** A câmera de ré está ativa agora por causa da seta (não muda a escolha salva em Câmeras). */
     private var autoRearActive = false
+    /** Alternância frontal/traseira ligada e intervalo em segundos (sem reconectar). */
+    private var altLens: Boolean
+        get() = prefs.getBoolean("altLens", false)
+        set(v) = prefs.edit().putBoolean("altLens", v).apply()
+    private var altSeconds: Int
+        get() = prefs.getInt("altSeconds", 5)
+        set(v) = prefs.edit().putInt("altSeconds", v).apply()
+    /** Lente que a alternância está mostrando agora (true = traseira). */
+    private var altPhase = false
     /** Lente que a câmera deve ter agora: a escolhida em Câmeras ou a de ré pela seta. */
-    private val rearNow: Boolean get() = rearLens || autoRearActive
+    private val rearNow: Boolean get() = rearLens || autoRearActive || (altLens && altPhase)
 
     /** Troca a lente pela seta (sem mudar a escolha salva). Desligar volta para a lente escolhida. */
     private fun setAutoRear(on: Boolean) {
@@ -303,7 +317,10 @@ class MainActivity : AppCompatActivity() {
         b.btnSettings.setOnClickListener { showSettings() }
         b.btnAuto.setOnClickListener { openAndroidAuto() }
         b.btnRoad.setOnClickListener { toggleRoad() }
-        phoneCamMode = BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)
+        // segurar o botão Estrada: reproduz uma viagem gravada (ou para a reprodução)
+        b.btnRoad.setOnLongClickListener { showTrips(); true }
+        // câmera do celular: pelo teste (--ez phoneCam true) ou pelo menu Câmeras (guardado até trocar)
+        phoneCamMode = (BuildConfig.DEBUG && intent.getBooleanExtra("phoneCam", false)) || prefs.getBoolean("phoneCamTest", false)
         if (phoneCamMode) useNative = true // o detector e o vídeo andam pelo caminho nativo
         roadDemo = BuildConfig.DEBUG && intent.getBooleanExtra("roadDemo", false)
         // teste da rua do mapa sem sair do lugar: --ef mapLat -23.56 --ef mapLon -46.65 --ef mapBearing 310
@@ -559,6 +576,8 @@ class MainActivity : AppCompatActivity() {
             CameraApi.setLens(ip, rear)
             runOnUiThread { if (gen == playGen) startStreams() }
         }.start()
+        // alternância ligada: retoma o revezamento (ex.: depois de voltar ao app)
+        if (altLens && !roadMode) { handler.removeCallbacks(altTick); handler.postDelayed(altTick, altSeconds * 1000L) }
     }
 
     private fun startStreams() {
@@ -578,8 +597,18 @@ class MainActivity : AppCompatActivity() {
 
     /** Botão Câmeras: frontal ou traseira (troca a lente na câmera); endereços RTSP ficam no "avançado". */
     private fun pickCamera() {
-        val items = arrayOf("Câmera frontal", "Câmera traseira", "Endereço de vídeo (avançado)")
+        // getdvrstate diz se a traseira está ligada na câmera
+        val rearOff = dvr?.rearConnected == false
+        val items = arrayOf(
+            "Câmera frontal",
+            if (rearOff) "Câmera traseira (desconectada)" else "Câmera traseira",
+            "Endereço de vídeo (avançado)",
+            "Celular: câmera traseira (teste)",
+            if (rearOff) "Alternar frontal e traseira (traseira desconectada)" else "Alternar frontal e traseira",
+        )
         val cur = when {
+            altLens -> 4
+            phoneCamMode -> 3
             customUrl.isNotBlank() -> -1
             rearLens -> 1
             else -> 0
@@ -589,6 +618,12 @@ class MainActivity : AppCompatActivity() {
             .setSingleChoiceItems(items, cur) { d, which ->
                 d.dismiss()
                 if (which == 2) { pickSource(main = true); return@setSingleChoiceItems }
+                if (rearOff && (which == 1 || which == 4)) { toast("A câmera traseira não está conectada na A200"); return@setSingleChoiceItems }
+                if (which == 3) { usePhoneCam(); return@setSingleChoiceItems }
+                if (which == 4) { pickAltInterval(); return@setSingleChoiceItems }
+                stopAlternating()
+                // sai da câmera do celular, se estava nela
+                if (phoneCamMode) { phoneCamMode = false; prefs.edit().putBoolean("phoneCamTest", false).apply() }
                 rearLens = which == 1
                 customUrl = ""
                 refreshInfo()
@@ -600,7 +635,106 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun lensName() = if (rearLens) "Traseira" else "Frontal"
+    /** Intervalo da alternância entre frontal e traseira (sem reconectar: a troca leva ~0,4 s). */
+    private fun pickAltInterval() {
+        val secs = intArrayOf(3, 5, 10)
+        val names = secs.map { "a cada $it s" }.toTypedArray()
+        val cur = secs.indexOf(altSeconds).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Alternar frontal e traseira")
+            .setSingleChoiceItems(names, cur) { d, which ->
+                d.dismiss()
+                altSeconds = secs[which]
+                startAlternating()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    /** Liga a alternância: a frente e a traseira se revezam na mesma transmissão. Não funciona na Estrada. */
+    private fun startAlternating() {
+        if (phoneCamMode || customUrl.isNotBlank()) { toast("Alternância só com a A200 (sem Endereço personalizado)"); return }
+        altLens = true
+        altPhase = rearLens
+        refreshInfo()
+        startPlayback() // a transmissão começa na lente escolhida; depois a alternância segue
+        handler.removeCallbacks(altTick)
+        handler.postDelayed(altTick, altSeconds * 1000L)
+    }
+
+    /** Desliga a alternância e volta para a lente salva em Câmeras. */
+    private fun stopAlternating() {
+        if (!altLens) return
+        altLens = false
+        handler.removeCallbacks(altTick)
+        val ip = camIp
+        val rear = rearNow
+        Thread { CameraApi.setLens(ip, rear) }.start()
+        refreshInfo()
+    }
+
+    /** Troca de lente a cada [altSeconds] s, sem reconectar. */
+    private val altTick = object : Runnable {
+        override fun run() {
+            if (!altLens) return
+            altPhase = !altPhase
+            val ip = camIp
+            val rear = altPhase
+            Thread { CameraApi.setLens(ip, rear) }.start()
+            handler.postDelayed(this, altSeconds * 1000L)
+        }
+    }
+
+    /** Troca para a câmera traseira do celular (teste); a escolha fica salva até voltar para a A200. */
+    private fun usePhoneCam() {
+        phoneCamMode = true
+        useNative = true // o detector e o vídeo andam pelo caminho nativo
+        prefs.edit().putBoolean("phoneCamTest", true).apply()
+        customUrl = ""
+        refreshInfo()
+        startPlayback()
+        if (roadMode) { roadMode = false; toggleRoad() } // reaplica a Estrada para a fonte nova
+        else restartDetect()
+    }
+
+    /** Último estado lido da câmera (`getdvrstate.cgi`); null = não sabe. */
+    @Volatile private var dvr: CameraApi.DvrState? = null
+
+    private val dvrTick = object : Runnable {
+        override fun run() {
+            if (phoneCamMode || customUrl.isNotBlank() || offCameraWifi) return
+            val ip = camIp
+            Thread {
+                val st = CameraApi.dvrState(ip)
+                runOnUiThread { applyDvr(st) }
+            }.start()
+            handler.postDelayed(this, 10_000L)
+        }
+    }
+
+    /** Mostra se a câmera está gravando e corrige a lente se ela estiver diferente da escolhida. */
+    private fun applyDvr(st: CameraApi.DvrState?) {
+        dvr = st
+        b.liveText.text = when {
+            st == null -> "AO VIVO"
+            !st.recording -> "AO VIVO • SEM GRAVAR"
+            else -> "AO VIVO • REC"
+        }
+        // o app oficial (ou outro aparelho) trocou a lente: volta para a escolhida no DashLive.
+        // Na alternância a lente muda de propósito; sem traseira conectada não há o que trocar.
+        if (st != null && !altLens && st.rearConnected && st.rearActive != rearNow) {
+            val ip = camIp
+            val rear = rearNow
+            android.util.Log.i("DashLive", "lente diferente na câmera; voltando para a ${if (rear) "traseira" else "frontal"}")
+            Thread { CameraApi.setLens(ip, rear) }.start()
+        }
+    }
+
+    private fun lensName() = when {
+        altLens -> "Alternando frontal e traseira (a cada $altSeconds s)"
+        rearLens -> "Traseira"
+        else -> "Frontal"
+    }
 
     /** Nome da tela grande: a lente e, se não for o caminho padrão, o caminho RTSP. */
     private fun mainName() = when {
@@ -847,6 +981,9 @@ class MainActivity : AppCompatActivity() {
         )
         val live = state == State.LIVE
         b.livePill.visibility = if (live) View.VISIBLE else View.GONE
+        // ao vivo com a A200: pergunta à câmera se está gravando e qual lente está ativa (a cada 10 s)
+        handler.removeCallbacks(dvrTick)
+        if (live && !phoneCamMode && customUrl.isBlank()) handler.post(dvrTick) else applyDvr(null)
         b.overlay.visibility = if (live || (roadMode && !phone)) View.GONE else View.VISIBLE
         b.overlay.text = "$title\n$subtitle"
     }
@@ -1320,6 +1457,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleRoad() {
         roadMode = !roadMode
+        if (roadMode) startRecorder() else { stopRecorder(); stopReplay() }
         if (roadMode) updateDay() // define dia/noite já ao abrir (para o modo noturno)
         applyNightDim()
         if (!phone) b.overlay.visibility = if (roadMode || b.livePill.visibility == View.VISIBLE) View.GONE else View.VISIBLE
@@ -1537,14 +1675,22 @@ class MainActivity : AppCompatActivity() {
             }
             lastFixAt = SystemClock.elapsedRealtime()
             // rua real na Estrada 3D: posição (rumo só andando; parado o GPS inventa direção)
-            if (!fakeMap) {
-                b.road3d.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null)
+            val bearing = if (loc.hasBearing() && loc.speed > 1.5f) loc.bearing else null
+            // na reprodução a posição vem da viagem gravada, não do GPS
+            if (!fakeMap && !replaying) {
+                b.road3d.onLocation(loc.latitude, loc.longitude, bearing)
                 feedMap(loc.latitude, loc.longitude)
             }
+            // velocidade limpa: parado (ou com erro maior que o valor) vira 0, sem bipe de limite à toa
+            val accS = if (loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond else null
+            val accH = if (loc.hasAccuracy()) loc.accuracy else null
+            val kmh = if (loc.hasSpeed()) GpsSpeed.kmh(loc.speed, accS, accH) else null
+            // grava o ponto da viagem (a Estrada aberta; o TripRecorder guarda 1 por segundo)
+            if (!replaying) recorder?.add(System.currentTimeMillis(), loc.latitude, loc.longitude, kmh, bearing)
             // com o OBD2 conectado, a velocidade do carro tem prioridade (mais precisa e sem atraso)
-            if (loc.hasSpeed() && !obdFresh && !fakeMap) {
-                b.roadView.speedKmh = loc.speed * 3.6f
-                egoKmh = loc.speed * 3.6f; egoAt = SystemClock.elapsedRealtime()
+            if (kmh != null && !obdFresh && !fakeMap && !replaying) {
+                b.roadView.speedKmh = kmh
+                egoKmh = kmh; egoAt = SystemClock.elapsedRealtime()
             }
         }
         override fun onProviderEnabled(provider: String) {}
@@ -1575,6 +1721,83 @@ class MainActivity : AppCompatActivity() {
         if (gpsOn) runCatching { lm.removeUpdates(gpsListener) }
         gpsOn = false
         b.roadView.speedKmh = null
+    }
+
+    // ---------------------------------------------------------------- viagens gravadas (replay)
+
+    private val tripsDir by lazy { File(getExternalFilesDir(null), "viagens").apply { mkdirs() } }
+    private var recorder: TripRecorder? = null
+    private var replaying = false
+    private var tripTrack: TripLog.Track? = null
+    private var tripStartAt = 0L
+
+    /** Grava a viagem enquanto a Estrada está aberta; sem nenhum ponto, o arquivo é apagado. */
+    private fun startRecorder() {
+        if (recorder != null) return
+        val now = System.currentTimeMillis()
+        runCatching { recorder = TripRecorder(File(tripsDir, TripLog.fileName(now)), now) }
+            .onFailure { android.util.Log.w("DashLive", "viagem não gravada: ${it.message}") }
+    }
+
+    private fun stopRecorder() {
+        val r = recorder ?: return
+        recorder = null
+        r.stop()
+        if (r.points == 0) r.file.delete()
+    }
+
+    private val speedAlarm = SpeedAlarm()
+    private val radarAlarm = RadarAlarm()
+
+    private val tripTick = object : Runnable {
+        override fun run() {
+            val tr = tripTrack ?: return
+            val p = tr.at(SystemClock.elapsedRealtime() - tripStartAt)
+            if (p == null) { stopReplay(); toast("Fim da viagem gravada"); return }
+            b.road3d.onLocation(p.lat, p.lon, p.bearing?.takeIf { (p.speedKmh ?: 0f) > 1.5f })
+            feedMap(p.lat, p.lon)
+            p.speedKmh?.let { b.roadView.speedKmh = it; egoKmh = it; egoAt = SystemClock.elapsedRealtime() }
+            handler.postDelayed(this, 250)
+        }
+    }
+
+    /** Abre a Estrada e anda pela viagem gravada, com o mapa e a velocidade daquele dia. */
+    private fun startReplay(f: File) {
+        val tr = runCatching { TripLog.Track.load(f) }.getOrNull()
+        if (tr == null || tr.durationMs <= 0L) { toast("Viagem sem pontos: ${f.name}"); return }
+        if (!roadMode) toggleRoad()
+        stopSpeed() // o GPS real não entra na reprodução
+        replaying = true
+        tripTrack = tr
+        tripStartAt = SystemClock.elapsedRealtime()
+        handler.removeCallbacks(tripTick)
+        handler.post(tripTick)
+        toast("Reproduzindo ${f.name.removePrefix("viagem_").removeSuffix(".csv")}")
+    }
+
+    private fun stopReplay() {
+        replaying = false
+        tripTrack = null
+        handler.removeCallbacks(tripTick)
+    }
+
+    private fun showTrips() {
+        if (replaying) {
+            AlertDialog.Builder(this).setTitle("Reproduzindo uma viagem")
+                .setPositiveButton("Parar") { _, _ -> stopReplay() }
+                .setNegativeButton("Fechar", null).show()
+            return
+        }
+        val files = TripLog.list(tripsDir)
+        if (files.isEmpty()) { toast("Nenhuma viagem gravada: abra a Estrada com o GPS ligado"); return }
+        val names = files.map { f ->
+            val date = f.nameWithoutExtension.removePrefix("viagem_")
+            val sum = runCatching { TripLog.summary(TripLog.parse(f.readText())) }.getOrNull()
+            if (sum == null) date else "$date • ${TripLog.summaryText(sum)}"
+        }.toTypedArray<CharSequence>()
+        AlertDialog.Builder(this).setTitle("Reproduzir viagem")
+            .setItems(names) { _, i -> startReplay(files[i]) }
+            .setNegativeButton("Cancelar", null).show()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

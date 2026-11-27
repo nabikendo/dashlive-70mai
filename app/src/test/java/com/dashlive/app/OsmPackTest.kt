@@ -66,4 +66,25 @@ class OsmPackTest {
         assertEquals(336809L, OsmPacks.relationId(" 336809 "))
         assertEquals(null, OsmPacks.relationId("Wanderlândia"))
     }
+
+    @Test fun packKeepsBuildingsWallsAndTreesOutOfRoads() {
+        val json = """{"elements":[
+            {"type":"way","id":1,"nodes":[10,11],"tags":{"highway":"residential"},
+             "geometry":[{"lat":-6.8520,"lon":-47.9660},{"lat":-6.8510,"lon":-47.9650}]},
+            {"type":"way","id":3,"nodes":[30,31,32,30],"tags":{"building":"yes","building:levels":"2"},
+             "geometry":[{"lat":-6.8515,"lon":-47.9655},{"lat":-6.8515,"lon":-47.9654},{"lat":-6.8516,"lon":-47.9654},{"lat":-6.8515,"lon":-47.9655}]},
+            {"type":"way","id":4,"nodes":[40,41],"tags":{"barrier":"fence"},
+             "geometry":[{"lat":-6.8518,"lon":-47.9660},{"lat":-6.8518,"lon":-47.9650}]},
+            {"type":"node","id":5,"lat":-6.8517,"lon":-47.9657,"tags":{"natural":"tree"}}
+        ]}"""
+        val p = OsmPack.parse(json, info())
+        assertEquals(1, p.wayCount)
+        val m = p.extract(-6.8515, -47.9655, 200)
+        assertEquals(1, m.ways.size)
+        assertEquals(1, m.buildings.size)
+        assertEquals(7f, m.buildings[0].height, 0.01f) // 2 andares: 2 × 3 m + 1 m
+        assertEquals(1, m.walls.size)
+        assertEquals(1.2f, m.walls[0].height, 0.01f)
+        assertEquals(1, m.trees.size)
+    }
 }

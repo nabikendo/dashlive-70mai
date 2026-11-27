@@ -191,7 +191,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         iblDay = IndirectLight.Builder().irradiance(1, floatArrayOf(0.62f, 0.70f, 0.85f)).intensity(0.85f).build(e)
         sun = newEntity()
         LightManager.Builder(LightManager.Type.DIRECTIONAL).color(0.62f, 0.72f, 1f).intensity(0.35f)
-            .direction(0.35f, -0.8f, 0.45f).castShadows(false).build(e, sun)
+            .direction(0.35f, -0.8f, 0.45f).castShadows(true).build(e, sun) // sombra do sol: prédios e carros no chão
         scene.addEntity(sun)
         view.colorGrading = ColorGrading.Builder().toneMapper(ToneMapper.Filmic()).build(e)
         view.antiAliasing = View.AntiAliasing.FXAA
@@ -302,7 +302,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
      * Cria a entidade com a malha e o material, já na cena. Com [group], a entidade e os buffers vão
      * para a lista (para apagar quando o trecho do mapa é refeito) e ficam presos ao [parent].
      */
-    private fun renderable(e: Engine, m: Mesh, mi: MaterialInstance, blendOrder: Int = 0, group: MutableList<Any>? = null, parent: Int = 0): Int {
+    private fun renderable(e: Engine, m: Mesh, mi: MaterialInstance, blendOrder: Int = 0, group: MutableList<Any>? = null, parent: Int = 0, shadow: Boolean = false): Int {
         val n = m.pos.size / 3
         // o material do glTF pede UV0 e UV1 mesmo sem textura (sem eles o Filament não desenha)
         val vb = VertexBuffer.Builder().bufferCount(5).vertexCount(n)
@@ -331,8 +331,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
             .material(0, mi)
             .blendOrder(0, blendOrder)
             .culling(false)
-            .castShadows(false)
-            .receiveShadows(false)
+            .castShadows(shadow)
+            .receiveShadows(true)
             .build(e, ent)
         val tm = e.transformManager
         if (parent != 0) tm.create(ent, tm.getInstance(parent), IDENTITY) else tm.create(ent)
@@ -488,6 +488,7 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     private val mapLights = ArrayList<Int>()
     private var yellowMi: MaterialInstance? = null
     private var bumpMi: MaterialInstance? = null
+    private var buildingMi: MaterialInstance? = null
     private val tmp = FloatArray(3)
     // pose do carro no referencial da malha (para levar pontos da malha para a tela)
     private var rootC = 1f
@@ -497,6 +498,13 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
     /** Nome da rua e número de faixas (para o painel), ou null sem mapa. */
     var streetInfo: String? = null
+    /** O que vem à frente na rota (curva, radar, semáforo, lombada) em uma linha, ou null. */
+    var aheadInfo: String? = null
+        private set
+    private var aheadTimer = 0f
+    /** Distância (m) até o radar mais perto à frente na rota, ou null. Para o aviso sonoro. */
+    var nearestRadarM: Float? = null
+        private set
     /** Limite de velocidade (km/h) da rua onde o carro está, pelo maxspeed do OSM; null se não há. */
     var speedLimitKmh: Int? = null
         private set
@@ -687,6 +695,13 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         val la = cc.lanesAhead(cc.segAt(carS))
         streetInfo = (w.tags["name"] ?: w.tags["ref"] ?: "rua sem nome") + " • $la faixa" + (if (la > 1) "s" else "")
         speedLimitKmh = SpeedLimit.parse(w.tags["maxspeed"])
+        // o que vem à frente: recalcula a cada meio segundo (não precisa de quadro a quadro)
+        aheadTimer -= dt
+        if (aheadTimer <= 0f) {
+            aheadTimer = 0.5f
+            aheadInfo = m.describeAhead(cc)
+            nearestRadarM = m.nextPoints(cc).firstOrNull { it.kind == OsmMap.PointKind.RADAR }?.dist
+        }
     }
 
     /** Apaga a malha do trecho e volta para a estrada genérica. */
@@ -695,6 +710,8 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         destroyGroup(e)
         cor = null
         streetInfo = null
+        aheadInfo = null
+        nearestRadarM = null
         speedLimitKmh = null
         for (ent in genericEnts) if (!scene.hasEntity(ent)) scene.addEntity(ent)
     }
@@ -710,6 +727,36 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
     }
 
     /** Monta a malha do trecho inteiro no referencial do ponto onde o carro está agora (s = 0). */
+    /** Janelas de um lado de prédio: uma por 3 m de parede e por andar, um pouco para fora da parede. */
+    private fun addWindows(m: Mesh, ax: Float, az: Float, bx: Float, bz: Float, h: Float, ccx: Float, ccz: Float) {
+        val dx = bx - ax; val dz = bz - az
+        val len = kotlin.math.sqrt(dx * dx + dz * dz)
+        if (len < 2.5f) return
+        val ux = dx / len; val uz = dz / len
+        // normal para fora: a que aponta para longe do centro do prédio
+        var nx = -uz; var nz = ux
+        val mx = (ax + bx) / 2f - ccx; val mz = (az + bz) / 2f - ccz
+        if (nx * mx + nz * mz < 0f) { nx = -nx; nz = -nz }
+        val ox = nx * 0.04f; val oz = nz * 0.04f
+        val floors = (h / 3f).toInt().coerceIn(1, 12)
+        var t = 1.0f
+        while (t + 1.3f < len - 0.6f) {
+            for (f in 0 until floors) {
+                val y0 = 1.0f + f * 3.0f
+                val y1 = y0 + 1.5f
+                if (y1 > h - 0.5f) break
+                val t1 = t + 1.3f
+                m.quad(floatArrayOf(
+                    ax + ux * t + ox, y0, az + uz * t + oz,
+                    ax + ux * t1 + ox, y0, az + uz * t1 + oz,
+                    ax + ux * t1 + ox, y1, az + uz * t1 + oz,
+                    ax + ux * t + ox, y1, az + uz * t + oz,
+                ), WINDOW_COLOR)
+            }
+            t += 3.0f
+        }
+    }
+
     private fun buildMapRoad() {
         val e = engine ?: return
         val c = cor ?: return
@@ -834,6 +881,16 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
                     signalLights.wall(x - 0.12f, x + 0.12f, 3.7f, 3.92f, fz, rgba(0.25f, 0.18f, 0.02f))
                     signalLights.wall(x - 0.12f, x + 0.12f, 3.4f, 3.62f, fz, rgba(0.02f, 0.2f, 0.06f))
                 }
+                OsmMap.PointKind.RADAR -> if (d < 40f) {
+                    // radar: poste fino com a caixa da câmera no alto, do lado da rua
+                    sample(c, ps, a)
+                    toFrame(pt.x, pt.y, p0)
+                    val side = if ((p0[0] - a[0]) * a[2] + (p0[1] - a[1]) * a[3] >= 0f) 1f else -1f
+                    val o = if (side > 0) ed[1] + 1.2f else ed[0] - 1.2f
+                    val x = a[0] + a[2] * o; val z = a[1] + a[3] * o
+                    poles.box(x - 0.06f, x + 0.06f, 0f, 3.4f, z - 0.06f, z + 0.06f, rgba(0.85f, 0.85f, 0.88f))
+                    poles.box(x - 0.3f, x + 0.3f, 3.2f, 3.6f, z - 0.14f, z + 0.14f, rgba(0.03f, 0.03f, 0.035f))
+                }
                 OsmMap.PointKind.LAMP -> if (d < 15f) {
                     sample(c, ps, a)
                     toFrame(pt.x, pt.y, p0)
@@ -881,6 +938,61 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
         if (poles.pos.isNotEmpty()) renderable(e, poles, poleMi!!, group = mapGroup, parent = roadRoot)
         if (heads.pos.isNotEmpty()) renderable(e, heads, lampHeadMi!!, group = mapGroup, parent = roadRoot)
         if (signalLights.pos.isNotEmpty()) renderable(e, signalLights, material(1f, 1f, 1f, unlit = true), group = mapGroup, parent = roadRoot)
+
+        // prédios do OSM perto do carro: paredes com a cor do prédio, telhado escuro
+        if (buildingMi == null) buildingMi = material(1f, 1f, 1f, unlit = false, rough = 0.85f)
+        val walls = Mesh(); val roofs = Mesh(); val windows = Mesh()
+        val p = FloatArray(2)
+        for (bd in m.buildings) {
+            val n = bd.xy.size / 2 - 1 // o contorno do OSM fecha no primeiro ponto
+            if (n < 3) continue
+            var cx = 0f; var cy = 0f
+            for (i in 0 until n) { cx += bd.xy[i * 2]; cy += bd.xy[i * 2 + 1] }
+            toFrame(cx / n, cy / n, p)
+            val ccx = p[0]; val ccz = p[1]
+            val dist = kotlin.math.sqrt(ccx * ccx + ccz * ccz)
+            if (dist > BUILD_RANGE) continue // a cidade toda pesaria demais
+            val fx = FloatArray(n * 2)
+            for (i in 0 until n) { toFrame(bd.xy[i * 2], bd.xy[i * 2 + 1], p); fx[i * 2] = p[0]; fx[i * 2 + 1] = p[1] }
+            val h = bd.height
+            val col = BUILD_COLORS[(bd.id % BUILD_COLORS.size).toInt()]
+            for (i in 0 until n) {
+                val j = (i + 1) % n
+                walls.quad(floatArrayOf(fx[i * 2], 0f, fx[i * 2 + 1], fx[j * 2], 0f, fx[j * 2 + 1], fx[j * 2], h, fx[j * 2 + 1], fx[i * 2], h, fx[i * 2 + 1]), col)
+                if (dist <= WINDOW_RANGE) addWindows(windows, fx[i * 2], fx[i * 2 + 1], fx[j * 2], fx[j * 2 + 1], h, ccx, ccz)
+            }
+            // telhado em leque (bom para prédios convexos; os côncavos ficam com um furo, aceitável)
+            for (i in 1 until n - 1) {
+                roofs.quad(floatArrayOf(fx[0], h, fx[1], fx[i * 2], h, fx[i * 2 + 1], fx[(i + 1) * 2], h, fx[(i + 1) * 2 + 1], fx[(i + 1) * 2], h, fx[(i + 1) * 2 + 1]), ROOF_COLOR)
+            }
+        }
+        if (walls.pos.isNotEmpty()) renderable(e, walls, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (roofs.pos.isNotEmpty()) renderable(e, roofs, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (windows.pos.isNotEmpty()) renderable(e, windows, buildingMi!!, group = mapGroup, parent = roadRoot)
+
+        // árvores (tronco + copa) e muros/cercas do OSM perto do carro
+        val trunks = Mesh(); val canopies = Mesh(); val fence = Mesh()
+        for (t in m.trees) {
+            toFrame(t[0], t[1], p)
+            if (kotlin.math.sqrt(p[0] * p[0] + p[1] * p[1]) > TREE_RANGE) continue
+            // tamanho variando de árvore para árvore (pela posição, sempre o mesmo)
+            val seed = ((t[0] * 97f + t[1] * 31f) % 1f + 1f) % 1f
+            val k = 0.85f + 0.4f * seed
+            val x = p[0]; val z = p[1]
+            trunks.box(x - 0.14f, x + 0.14f, 0f, 2.4f * k, z - 0.14f, z + 0.14f, rgba(0.34f, 0.23f, 0.14f))
+            canopies.box(x - 1.7f * k, x + 1.7f * k, 2.2f * k, 4.4f * k, z - 1.7f * k, z + 1.7f * k, rgba(0.2f + 0.08f * seed, 0.38f, 0.15f))
+        }
+        for (w in m.walls) {
+            val nn = w.xy.size / 2
+            for (i in 0 until nn - 1) {
+                toFrame(w.xy[i * 2], w.xy[i * 2 + 1], p0); toFrame(w.xy[(i + 1) * 2], w.xy[(i + 1) * 2 + 1], p1)
+                if (kotlin.math.min(kotlin.math.sqrt(p0[0] * p0[0] + p0[1] * p0[1]), kotlin.math.sqrt(p1[0] * p1[0] + p1[1] * p1[1])) > WALL_RANGE) continue
+                fence.quad(floatArrayOf(p0[0], 0f, p0[1], p1[0], 0f, p1[1], p1[0], w.height, p1[1], p0[0], w.height, p0[1]), WALL_COLOR)
+            }
+        }
+        if (trunks.pos.isNotEmpty()) renderable(e, trunks, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (canopies.pos.isNotEmpty()) renderable(e, canopies, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
+        if (fence.pos.isNotEmpty()) renderable(e, fence, buildingMi!!, group = mapGroup, parent = roadRoot, shadow = true)
 
         // luzes de verdade só nos 8 postes mais próximos à frente (luz custa caro)
         val tm = e.transformManager
@@ -1337,6 +1449,20 @@ class Road3DView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) 
 
     companion object {
         private fun rgba(r: Float, g: Float, b: Float, a: Float = 1f) = floatArrayOf(r, g, b, a)
+        /** Prédios até esta distância (m) do carro entram na malha. */
+        private const val BUILD_RANGE = 260f
+        /** Janelas só nos prédios até esta distância (são muitas). */
+        private const val WINDOW_RANGE = 120f
+        private const val TREE_RANGE = 180f
+        private const val WALL_RANGE = 180f
+        private val WINDOW_COLOR = rgba(0.1f, 0.13f, 0.17f)
+        private val WALL_COLOR = rgba(0.62f, 0.6f, 0.56f)
+        private val ROOF_COLOR = rgba(0.3f, 0.3f, 0.32f)
+        /** Cores de parede (reboco, tijolo, cinza, bege); cada prédio pega uma pelo id. */
+        private val BUILD_COLORS = arrayOf(
+            rgba(0.86f, 0.82f, 0.74f), rgba(0.62f, 0.38f, 0.28f), rgba(0.66f, 0.67f, 0.68f),
+            rgba(0.78f, 0.7f, 0.56f), rgba(0.9f, 0.9f, 0.88f), rgba(0.5f, 0.56f, 0.6f),
+        )
         private val SKY = floatArrayOf(0.010f, 0.016f, 0.034f)
         private val SKY_DAY = floatArrayOf(0.22f, 0.38f, 0.66f)
         private const val FOV = 38.0

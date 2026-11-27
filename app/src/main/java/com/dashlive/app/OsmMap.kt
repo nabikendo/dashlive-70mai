@@ -2,9 +2,11 @@ package com.dashlive.app
 
 import org.json.JSONObject
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * Ruas em volta do carro, vindas do OpenStreetMap (Overpass, `out body geom`), em metros num plano
@@ -17,11 +19,28 @@ import kotlin.math.hypot
  *  - [ways]/[points]: as outras ruas (laterais, cruzamentos) e faixa de pedestre, quebra-molas,
  *    semáforo e poste.
  */
-class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val points: List<Point>) {
+class OsmMap(
+    val refLat: Double,
+    val refLon: Double,
+    val ways: List<Way>,
+    val points: List<Point>,
+    /** Prédios (contorno no plano local e altura em metros); vazio quando o mapa veio sem prédios. */
+    val buildings: List<Building> = emptyList(),
+    /** Árvores (x, y) no plano local. */
+    val trees: List<FloatArray> = emptyList(),
+    /** Muros e cercas (contorno aberto e altura em metros). */
+    val walls: List<Wall> = emptyList(),
+) {
 
-    enum class PointKind { CROSSING, BUMP, SIGNAL, LAMP }
+    enum class PointKind { CROSSING, BUMP, SIGNAL, LAMP, RADAR }
 
     class Point(val x: Float, val y: Float, val kind: PointKind)
+
+    /** Prédio: contorno fechado (x, y), id do OSM e altura em metros. */
+    class Building(val id: Long, val xy: FloatArray, val height: Float)
+
+    /** Muro ou cerca: linha (x, y) e altura em metros. */
+    class Wall(val xy: FloatArray, val height: Float)
 
     class Way(val id: Long, val nodes: LongArray, val xy: FloatArray, val tags: Map<String, String>) {
         val highway = tags["highway"] ?: ""
@@ -217,6 +236,57 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
         return Corridor(xy, s, segWay, segRev)
     }
 
+    /** Curva à frente: a que distância começa, para que lado (direita = true) e quantos graus. */
+    class Turn(val dist: Float, val right: Boolean, val deg: Float)
+
+    /** Ponto do mapa à frente, na rota, e a que distância do carro. */
+    class Ahead(val dist: Float, val kind: PointKind)
+
+    /**
+     * Primeira mudança de rumo de pelo menos [minDeg] no trecho à frente (até [within] m), comparando
+     * o rumo a cada [step] m com o rumo do carro. Pega curvas suaves e as de cruzamento.
+     */
+    fun nextTurn(c: Corridor, minDeg: Float = 30f, within: Float = 250f, step: Float = 5f): Turn? {
+        val out = FloatArray(3)
+        c.at(0f, out)
+        val h0 = out[2]
+        val minRad = Math.toRadians(minDeg.toDouble()).toFloat()
+        val lim = minOf(within, c.end)
+        var d = step
+        while (d <= lim) {
+            c.at(d, out)
+            val diff = signedAngle(out[2], h0)
+            if (abs(diff) >= minRad) return Turn(d, diff > 0, abs(diff) * 180f / PI.toFloat())
+            d += step
+        }
+        return null
+    }
+
+    /** Pontos do mapa (lombada, semáforo, radar, ...) à frente, a até [off] m da rota, em ordem. */
+    fun nextPoints(c: Corridor, within: Float = 300f, off: Float = 12f): List<Ahead> {
+        val res = ArrayList<Ahead>()
+        for (p in points) {
+            val (s, d) = c.project(p.x, p.y)
+            if (s > 0f && s <= within && d <= off) res += Ahead(s, p.kind)
+        }
+        return res.sortedBy { it.dist }
+    }
+
+    /** Frase curta do que vem à frente (curva, radar, semáforo, lombada), ou null se não há nada. */
+    fun describeAhead(c: Corridor): String? {
+        val parts = ArrayList<String>()
+        nextTurn(c)?.let { parts += "curva à ${if (it.right) "direita" else "esquerda"} em ${it.dist.roundToInt()} m" }
+        val pts = nextPoints(c)
+        // radares: quantos há à frente e a que distância está o próximo
+        val radars = pts.filter { it.kind == PointKind.RADAR }
+        if (radars.size == 1) parts += "radar em ${radars[0].dist.roundToInt()} m"
+        else if (radars.size > 1) parts += "${radars.size} radares, o próximo em ${radars[0].dist.roundToInt()} m"
+        for ((kind, name) in listOf(PointKind.SIGNAL to "semáforo", PointKind.BUMP to "lombada")) {
+            pts.firstOrNull { it.kind == kind }?.let { parts += "$name em ${it.dist.roundToInt()} m" }
+        }
+        return if (parts.isEmpty()) null else parts.joinToString(" • ")
+    }
+
     companion object {
         const val M_PER_DEG_LAT = 110_540.0
         const val M_PER_DEG_LON = 111_320.0
@@ -227,6 +297,14 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             "living_street", "service", "motorway_link", "trunk_link", "primary_link", "secondary_link",
             "tertiary_link", "road",
         )
+
+        /** Diferença de rumos com sinal, de −π a π: positiva = girou para a direita (sentido horário). */
+        fun signedAngle(a: Float, b: Float): Float {
+            var d = (a - b) % (2 * PI).toFloat()
+            if (d > PI) d -= (2 * PI).toFloat()
+            if (d < -PI) d += (2 * PI).toFloat()
+            return d
+        }
 
         /** Diferença entre dois rumos, 0..π. */
         fun angleDiff(a: Float, b: Float): Float {
@@ -247,15 +325,31 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             val types = (DRIVABLE - "service").joinToString("|")
             return "[out:json][timeout:20][bbox:$bb];(" +
                 "way[highway~\"^($types)$\"];" +
-                "node[highway~\"^(crossing|traffic_signals|street_lamp)$\"];" +
+                "way[building];" +
+                "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
+                "node[natural=tree];" +
+                "way[barrier~\"^(wall|fence)$\"];" +
                 ");out body geom;"
+        }
+
+        /** Altura de muro (2 m) ou cerca (1,2 m), com a tag `height` quando for um número. */
+        fun wallHeight(tags: Map<String, String>): Float =
+            tags["height"]?.let { Regex("""\d+(\.\d+)?""").find(it)?.value?.toFloatOrNull() }
+                ?: if (tags["barrier"] == "wall") 2f else 1.2f
+
+        /** Altura do prédio: a tag `height`; senão 3 m por andar; senão 8 m. */
+        fun buildingHeight(tags: Map<String, String>): Float {
+            tags["height"]?.let { h -> Regex("""\d+(\.\d+)?""").find(h)?.value?.toFloatOrNull()?.takeIf { it > 1f }?.let { return it } }
+            tags["building:levels"]?.toFloatOrNull()?.takeIf { it > 0f }?.let { return it * 3f + 1f }
+            return 8f
         }
 
         /** Que tipo de ponto é um nó do OSM (lombada, semáforo, poste, faixa de pedestre) ou null. */
         fun pointKind(tags: Map<String, String>): PointKind? = when {
             tags["traffic_calming"] != null && tags["traffic_calming"] != "no" &&
                 tags["traffic_calming"] != "island" && tags["traffic_calming"] != "choker" -> PointKind.BUMP
+            tags["highway"] == "speed_camera" -> PointKind.RADAR
             tags["highway"] == "traffic_signals" -> PointKind.SIGNAL
             tags["highway"] == "street_lamp" -> PointKind.LAMP
             tags["highway"] == "crossing" || tags["crossing"] != null -> PointKind.CROSSING
@@ -268,8 +362,11 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             val types = (DRIVABLE - "service").joinToString("|")
             return "[out:json][timeout:$timeout][bbox:$bb];(" +
                 "way[highway~\"^($types)$\"];" +
-                "node[highway~\"^(crossing|traffic_signals|street_lamp)$\"];" +
+                "node[highway~\"^(crossing|traffic_signals|street_lamp|speed_camera)$\"];" +
                 "node[traffic_calming];" +
+                "node[natural=tree];" +
+                "way[building];" +
+                "way[barrier~\"^(wall|fence)$\"];" +
                 ");out body geom;"
         }
 
@@ -279,6 +376,9 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
             val els = root.getJSONArray("elements")
             val ways = ArrayList<Way>()
             val pts = ArrayList<Point>()
+            val bldgs = ArrayList<Building>()
+            val trees = ArrayList<FloatArray>()
+            val walls = ArrayList<Wall>()
             val kx = cos(Math.toRadians(refLat)) * M_PER_DEG_LON
             for (i in 0 until els.length()) {
                 val e = els.getJSONObject(i)
@@ -295,6 +395,15 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
                             xy[k * 2] = ((g.getDouble("lon") - refLon) * kx).toFloat()
                             xy[k * 2 + 1] = ((g.getDouble("lat") - refLat) * M_PER_DEG_LAT).toFloat()
                         }
+                        // prédio: contorno reto (sem suavizar), vai para a lista de prédios
+                        if (tags["building"] != null && tags["highway"] == null) {
+                            bldgs += Building(e.getLong("id"), xy, buildingHeight(tags))
+                            continue
+                        }
+                        if (tags["barrier"] == "wall" || tags["barrier"] == "fence") {
+                            walls += Wall(xy, wallHeight(tags))
+                            continue
+                        }
                         // curvas suaves (o OSM tem pontos em zigue-zague); mesmo número de pontos
                         smoothLine(xy)
                         ways += Way(e.getLong("id"), LongArray(nodes.length()) { nodes.getLong(it) }, xy, tags)
@@ -302,12 +411,13 @@ class OsmMap(val refLat: Double, val refLon: Double, val ways: List<Way>, val po
                     "node" -> {
                         val x = ((e.getDouble("lon") - refLon) * kx).toFloat()
                         val y = ((e.getDouble("lat") - refLat) * M_PER_DEG_LAT).toFloat()
+                        if (tags["natural"] == "tree") { trees += floatArrayOf(x, y); continue }
                         val kind = pointKind(tags) ?: continue
                         pts += Point(x, y, kind)
                     }
                 }
             }
-            return OsmMap(refLat, refLon, ways, pts)
+            return OsmMap(refLat, refLon, ways, pts, bldgs, trees, walls)
         }
     }
 }

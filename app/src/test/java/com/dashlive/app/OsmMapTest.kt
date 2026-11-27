@@ -85,4 +85,78 @@ class OsmMapTest {
         assertEquals(50f, o[1], 0.1f)
         assertEquals(0f, o[2], 0.01f) // rumo norte
     }
+
+    @Test fun straightRoadHasNoTurnAhead() {
+        // a rua do mapa de mentira segue quase reta (5,7° no último trecho): nenhuma curva de 30°
+        val c = map.corridor(map.match(0f, 0f, 0f)!!)
+        assertNull(map.nextTurn(c))
+    }
+
+    @Test fun turnAheadIsRightAndWhere() {
+        // rua de (0, -100) a (0, 100) e depois para nordeste (45°): curva à direita a ~100 m
+        val m = OsmMap.parse("""{"elements":[
+            ${way(1, "\"highway\":\"residential\"", Triple(1, 0.0, -100.0), Triple(2, 0.0, 0.0), Triple(3, 0.0, 100.0))},
+            ${way(2, "\"highway\":\"residential\"", Triple(3, 0.0, 100.0), Triple(4, 100.0, 200.0))}
+        ]}""", 0.0, 0.0)
+        val c = m.corridor(m.match(0f, 0f, 0f)!!)
+        val t = m.nextTurn(c)!!
+        assertTrue(t.right)
+        assertTrue("curva a ${t.dist} m", t.dist in 100f..110f)
+        assertEquals(45f, t.deg, 3f)
+    }
+
+    @Test fun pointsAheadInOrder() {
+        // faixa de pedestre a 50 m e lombada a 70 m, ambas em cima da rua; nada atrás
+        val c = map.corridor(map.match(0f, 0f, 0f)!!)
+        val ahead = map.nextPoints(c)
+        assertEquals(OsmMap.PointKind.CROSSING, ahead[0].kind)
+        assertEquals(50f, ahead[0].dist, 0.5f)
+        assertEquals(OsmMap.PointKind.BUMP, ahead[1].kind)
+        assertEquals(70f, ahead[1].dist, 0.5f)
+        val desc = map.describeAhead(c)!!
+        assertTrue(desc, desc.contains("lombada em 70 m"))
+    }
+
+    @Test fun radarIsAPoint() {
+        val m = OsmMap.parse("""{"elements":[{"type":"node","id":20,"lat":${lat(30.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}}]}""", 0.0, 0.0)
+        assertEquals(1, m.points.size)
+        assertEquals(OsmMap.PointKind.RADAR, m.points[0].kind)
+    }
+
+    @Test fun countsRadarsAhead() {
+        // dois radares na própria rua, a 120 m e a 200 m à frente do carro
+        val m = OsmMap.parse("""{"elements":[
+            ${way(1, "\"highway\":\"residential\"", Triple(1, 0.0, -100.0), Triple(2, 0.0, 0.0), Triple(3, 0.0, 300.0))},
+            {"type":"node","id":30,"lat":${lat(120.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}},
+            {"type":"node","id":31,"lat":${lat(200.0)},"lon":${lon(0.0)},"tags":{"highway":"speed_camera"}}
+        ]}""", 0.0, 0.0)
+        val c = m.corridor(m.match(0f, 0f, 0f)!!)
+        val desc = m.describeAhead(c)!!
+        assertTrue(desc, desc.contains("2 radares, o próximo em 120 m"))
+    }
+
+    @Test fun parsesBuildingsWithHeight() {
+        // prédio de 3 andares (3 × 3 m + 1 m) com contorno fechado; não é rua
+        val m = OsmMap.parse("""{"elements":[
+            ${way(40, "\"building\":\"yes\",\"building:levels\":\"3\"", Triple(41, 0.0, 0.0), Triple(42, 10.0, 0.0), Triple(43, 10.0, 10.0), Triple(44, 0.0, 0.0))}
+        ]}""", 0.0, 0.0)
+        assertEquals(0, m.ways.size)
+        assertEquals(1, m.buildings.size)
+        assertEquals(10f, m.buildings[0].height, 0.01f)
+        assertEquals(4, m.buildings[0].xy.size / 2)
+    }
+
+    @Test fun parsesTreesAndWalls() {
+        val m = OsmMap.parse("""{"elements":[
+            {"type":"node","id":50,"lat":${lat(5.0)},"lon":${lon(3.0)},"tags":{"natural":"tree"}},
+            ${way(51, "\"barrier\":\"wall\"", Triple(52, 0.0, 0.0), Triple(53, 20.0, 0.0))},
+            ${way(54, "\"barrier\":\"fence\",\"height\":\"1.5 m\"", Triple(55, 0.0, 5.0), Triple(56, 20.0, 5.0))}
+        ]}""", 0.0, 0.0)
+        assertEquals(1, m.trees.size)
+        assertEquals(3f, m.trees[0][0], 0.01f)
+        assertEquals(2, m.walls.size)
+        assertEquals(2f, m.walls[0].height, 0.01f)
+        assertEquals(1.5f, m.walls[1].height, 0.01f)
+        assertEquals(0, m.points.size)
+    }
 }
